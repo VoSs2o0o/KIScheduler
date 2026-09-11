@@ -1,4 +1,5 @@
 using KIScheduler.Infrastructure.Logging;
+using KIScheduler.Infrastructure.Persistence;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -41,8 +42,11 @@ internal static class Program
                     RollingFileLoggerOptions.FromConfiguration(context.Configuration),
                     context.HostingEnvironment.ContentRootPath));
             })
-            .ConfigureServices(services =>
+            .ConfigureServices((context, services) =>
             {
+                services.AddKischedulerPersistence(
+                    context.Configuration,
+                    context.HostingEnvironment.ContentRootPath);
                 services.AddSingleton<MainForm>();
                 services.AddHostedService<SchedulerWorker>();
             });

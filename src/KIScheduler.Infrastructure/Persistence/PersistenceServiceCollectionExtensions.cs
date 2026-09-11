@@ -1,0 +1,40 @@
+using KIScheduler.Core.Contracts;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace KIScheduler.Infrastructure.Persistence;
+
+public static class PersistenceServiceCollectionExtensions
+{
+    public static IServiceCollection AddKischedulerPersistence(this IServiceCollection services,
+        IConfiguration configuration, string contentRootPath)
+    {
+        var configuredPath = configuration["Persistence:DatabasePath"];
+        var databasePath = Path.GetFullPath(string.IsNullOrWhiteSpace(configuredPath)
+            ? Path.Combine("data", "kischeduler.db") : configuredPath, contentRootPath);
+        Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
+
+        var connectionString = new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            ForeignKeys = true,
+            DefaultTimeout = 5,
+            Pooling = true
+        }.ToString();
+
+        services.AddDbContextFactory<KischedulerDbContext>(options => options.UseSqlite(connectionString));
+        services.AddSingleton<IWorkItemRepository, SqliteWorkItemRepository>();
+        services.AddSingleton<IProjectRepository, SqliteProjectRepository>();
+        services.AddSingleton<IPlatformRepository, SqlitePlatformRepository>();
+        services.AddSingleton<IUsagePolicyRepository, SqliteUsagePolicyRepository>();
+        services.AddSingleton<IUsageSnapshotRepository, SqliteUsageSnapshotRepository>();
+        services.AddSingleton<IExecutionHistoryRepository, SqliteExecutionHistoryRepository>();
+        services.AddSingleton<IExecutionBlockRepository, SqliteExecutionBlockRepository>();
+        services.AddSingleton<ISettingsRepository, SqliteSettingsRepository>();
+        services.AddSingleton<IAtomicExecutionRepository, SqliteAtomicExecutionRepository>();
+        services.AddHostedService<DatabaseInitializationService>();
+        return services;
+    }
+}

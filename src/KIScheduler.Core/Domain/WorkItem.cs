@@ -35,6 +35,32 @@ public sealed class WorkItem
     public WorkItemStatus Status { get; private set; }
     public int NormalRetryCount { get; private set; }
 
+    public static WorkItem Rehydrate(WorkItemId id, string title, WorkItemPriority priority,
+        PlatformId platformId, ModelId modelId, EffortLevel effort, PromptPath promptPath,
+        bool autoCommit, DateTimeOffset createdAtUtc, ProjectId? projectId, WorkItemStatus status,
+        DateTimeOffset? firstAttemptStartedAtUtc, bool hasExecutionStarted, int normalRetryCount)
+    {
+        if (firstAttemptStartedAtUtc.HasValue)
+        {
+            DomainValidation.Utc(firstAttemptStartedAtUtc.Value, nameof(firstAttemptStartedAtUtc));
+        }
+
+        if (normalRetryCount < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(normalRetryCount));
+        }
+
+        var item = new WorkItem(id, title, priority, platformId, modelId, effort, promptPath,
+            autoCommit, createdAtUtc, projectId)
+        {
+            Status = status,
+            FirstAttemptStartedAtUtc = firstAttemptStartedAtUtc,
+            HasExecutionStarted = hasExecutionStarted,
+            NormalRetryCount = normalRetryCount
+        };
+        return item;
+    }
+
     public void TransitionTo(WorkItemStatus target)
     {
         WorkItemStateMachine.EnsureAllowed(Status, target);
