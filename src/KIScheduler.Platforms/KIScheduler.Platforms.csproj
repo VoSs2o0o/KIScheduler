@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\KIScheduler.Core\KIScheduler.Core.csproj" />
+  </ItemGroup>
+</Project>

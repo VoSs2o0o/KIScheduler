@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.2.0" />
+    <PackageReference Include="MSTest.TestAdapter" Version="2.2.10" />
+    <PackageReference Include="MSTest.TestFramework" Version="2.2.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KIScheduler.Core\KIScheduler.Core.csproj" />
+    <ProjectReference Include="..\..\src\KIScheduler.Infrastructure\KIScheduler.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\KIScheduler.Platforms\KIScheduler.Platforms.csproj" />
+  </ItemGroup>
+</Project>
