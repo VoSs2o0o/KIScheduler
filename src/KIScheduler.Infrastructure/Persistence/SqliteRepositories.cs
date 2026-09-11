@@ -46,9 +46,27 @@ public sealed class SqliteWorkItemRepository(IDbContextFactory<KischedulerDbCont
         try
         {
             await db.Database.ExecuteSqlInterpolatedAsync(
-                $"DELETE FROM SchedulerLeases WHERE WorkItemId = {workItemId.Value} AND ExpiresAtUtc <= {acquiredAtUtc}", cancellationToken);
+                $"DELETE FROM SchedulerLeases WHERE ExpiresAtUtc <= {acquiredAtUtc}", cancellationToken);
             var changed = await db.Database.ExecuteSqlInterpolatedAsync(
-                $"UPDATE WorkItems SET Status = {(int)WorkItemStatus.Reserviert} WHERE Id = {workItemId.Value} AND Status IN ({(int)WorkItemStatus.InWarteschlange}, {(int)WorkItemStatus.WartetAufUsage})", cancellationToken);
+                $"""
+                UPDATE WorkItems
+                SET Status = {(int)WorkItemStatus.Reserviert}
+                WHERE Id = {workItemId.Value}
+                  AND Status IN ({(int)WorkItemStatus.InWarteschlange}, {(int)WorkItemStatus.WartetAufUsage})
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM SchedulerLeases AS lease
+                      INNER JOIN WorkItems AS active ON active.Id = lease.WorkItemId
+                      WHERE lease.ExpiresAtUtc > {acquiredAtUtc}
+                        AND (
+                            active.PlatformId = (SELECT candidate.PlatformId FROM WorkItems AS candidate WHERE candidate.Id = {workItemId.Value})
+                            OR (
+                                (SELECT candidate.ProjectId FROM WorkItems AS candidate WHERE candidate.Id = {workItemId.Value}) IS NOT NULL
+                                AND active.ProjectId = (SELECT candidate.ProjectId FROM WorkItems AS candidate WHERE candidate.Id = {workItemId.Value})
+                            )
+                        )
+                  )
+                """, cancellationToken);
             if (changed != 1 || await db.SchedulerLeases.AnyAsync(x => x.WorkItemId == workItemId.Value, cancellationToken))
             {
                 await transaction.RollbackAsync(cancellationToken); return null;

@@ -349,7 +349,7 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
 
                     b.ToTable("UsagePolicies", null, t =>
                         {
-                            t.HasCheckConstraint("CK_UsagePolicies_MaxUsedPercent", "MaxUsedPercent >= 0 AND MaxUsedPercent <= 100");
+                            t.HasCheckConstraint("CK_UsagePolicies_MaxUsedPercent", "CAST(MaxUsedPercent AS REAL) >= 0 AND CAST(MaxUsedPercent AS REAL) <= 100");
 
                             t.HasCheckConstraint("CK_UsagePolicies_RefreshInterval", "RefreshIntervalTicks > 0");
                         });
@@ -428,7 +428,7 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
 
                     b.ToTable("UsageWindows", null, t =>
                         {
-                            t.HasCheckConstraint("CK_UsageWindows_UsedPercent", "UsedPercent >= 0 AND UsedPercent <= 100");
+                            t.HasCheckConstraint("CK_UsageWindows_UsedPercent", "CAST(UsedPercent AS REAL) >= 0 AND CAST(UsedPercent AS REAL) <= 100");
                         });
                 });
 

@@ -116,6 +116,28 @@ public sealed class SqlitePersistenceTests
     }
 
     [TestMethod]
+    public async Task LeasesAtomicallyEnforcePlatformAndProjectCapacity()
+    {
+        var repository = new SqliteWorkItemRepository(factory!);
+        var firstProject = ProjectId.New();
+        var secondProject = ProjectId.New();
+        var projects = new SqliteProjectRepository(factory!);
+        await projects.SaveAsync(new ProjectDefinition(firstProject, "First", Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")), "master"));
+        await projects.SaveAsync(new ProjectDefinition(secondProject, "Second", Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")), "master"));
+        var first = CreateQueuedWorkItem(firstProject);
+        var samePlatform = CreateQueuedWorkItem(secondProject);
+        var sameProject = CreateQueuedWorkItem(firstProject, "claude");
+        await repository.SaveAsync(first);
+        await repository.SaveAsync(samePlatform);
+        await repository.SaveAsync(sameProject);
+        var now = DateTimeOffset.UtcNow;
+
+        Assert.IsNotNull(await repository.TryAcquireLeaseAsync(first.Id, "worker-a", now, TimeSpan.FromMinutes(1)));
+        Assert.IsNull(await repository.TryAcquireLeaseAsync(samePlatform.Id, "worker-b", now, TimeSpan.FromMinutes(1)));
+        Assert.IsNull(await repository.TryAcquireLeaseAsync(sameProject.Id, "worker-c", now, TimeSpan.FromMinutes(1)));
+    }
+
+    [TestMethod]
     public async Task UsageExceededResultAndBothBlocksAreSavedAtomically()
     {
         var projects = new SqliteProjectRepository(factory!);
@@ -150,9 +172,9 @@ public sealed class SqlitePersistenceTests
         Assert.AreEqual(1, (await blocks.ListActiveProjectHoldsAsync()).Count);
     }
 
-    private static WorkItem CreateQueuedWorkItem(ProjectId? projectId = null)
+    private static WorkItem CreateQueuedWorkItem(ProjectId? projectId = null, string platformId = "codex")
     {
-        var item = new WorkItem(WorkItemId.New(), "AP", new(50), new("codex"), new("gpt"), new("medium"),
+        var item = new WorkItem(WorkItemId.New(), "AP", new(50), new(platformId), new("gpt"), new("medium"),
             new("docs/AP.md"), true, DateTimeOffset.UtcNow, projectId);
         item.TransitionTo(WorkItemStatus.InWarteschlange);
         return item;

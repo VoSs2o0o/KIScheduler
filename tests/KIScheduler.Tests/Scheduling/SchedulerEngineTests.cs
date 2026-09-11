@@ -1,0 +1,316 @@
+using KIScheduler.Core.Contracts;
+using KIScheduler.Core.Domain;
+using KIScheduler.Core.Scheduling;
+using KIScheduler.Infrastructure;
+using KIScheduler.Infrastructure.Persistence;
+using KIScheduler.Platforms;
+using KIScheduler.Platforms.Testing;
+using Microsoft.Data.Sqlite;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+
+namespace KIScheduler.Tests.Scheduling;
+
+[TestClass]
+public sealed class SchedulerEngineTests
+{
+    [TestMethod]
+    public async Task SamePlatformNeverExecutesTwiceInParallel()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var first = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("first"), 60);
+        var second = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("second"), 50);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Platform("codex").EnqueueExecution(async (_, token) =>
+        {
+            await release.Task.WaitAsync(token);
+            return new(PlatformExecutionOutcome.Succeeded, 0);
+        });
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await WaitUntilAsync(() => fixture.Platform("codex").ActiveExecutions == 1);
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
+        release.SetResult(true);
+        await fixture.Engine.WaitForIdleAsync();
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        Assert.AreEqual(1, fixture.Platform("codex").MaximumConcurrentExecutions);
+        Assert.AreEqual(WorkItemStatus.TechnischErfolgreich, (await fixture.WorkItems.GetAsync(first.Id))!.Status);
+        Assert.AreEqual(WorkItemStatus.TechnischErfolgreich, (await fixture.WorkItems.GetAsync(second.Id))!.Status);
+    }
+
+    [TestMethod]
+    public async Task DifferentPlatformsCanRunInParallelInDifferentProjects()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex", "claude");
+        await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("codex-project"), 50);
+        await fixture.AddWorkItemAsync("claude", await fixture.AddProjectAsync("claude-project"), 50);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        foreach (var id in new[] { "codex", "claude" })
+            fixture.Platform(id).EnqueueExecution(async (_, token) =>
+            {
+                await release.Task.WaitAsync(token);
+                return new(PlatformExecutionOutcome.Succeeded, 0);
+            });
+
+        Assert.AreEqual(2, await fixture.Engine.RunCycleAsync());
+        await WaitUntilAsync(() => fixture.Platform("codex").ActiveExecutions == 1
+            && fixture.Platform("claude").ActiveExecutions == 1);
+        release.SetResult(true);
+        await fixture.Engine.WaitForIdleAsync();
+
+        Assert.AreEqual(1, fixture.Platform("codex").MaximumConcurrentExecutions);
+        Assert.AreEqual(1, fixture.Platform("claude").MaximumConcurrentExecutions);
+    }
+
+    [TestMethod]
+    public async Task DifferentPlatformsDoNotRunInParallelInSameProject()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex", "claude");
+        var project = await fixture.AddProjectAsync("shared");
+        await fixture.AddWorkItemAsync("codex", project, 60);
+        await fixture.AddWorkItemAsync("claude", project, 50);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        foreach (var id in new[] { "codex", "claude" })
+            fixture.Platform(id).EnqueueExecution(async (_, token) =>
+            {
+                await release.Task.WaitAsync(token);
+                return new(PlatformExecutionOutcome.Succeeded, 0);
+            });
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await WaitUntilAsync(() => fixture.Platform("codex").ActiveExecutions
+            + fixture.Platform("claude").ActiveExecutions == 1);
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
+        release.SetResult(true);
+        await fixture.Engine.WaitForIdleAsync();
+    }
+
+    [TestMethod]
+    public async Task BlockedCodexDoesNotPreventEligibleClaudeWork()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex", "claude");
+        var codex = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("codex-project"), 90);
+        await fixture.AddWorkItemAsync("claude", await fixture.AddProjectAsync("claude-project"), 10);
+        fixture.SetUsage("codex", 75);
+        fixture.SetUsage("claude", 20);
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        Assert.AreEqual(0, fixture.Platform("codex").Requests.Count);
+        Assert.AreEqual(1, fixture.Platform("claude").Requests.Count);
+        Assert.AreEqual(WorkItemStatus.WartetAufUsage, (await fixture.WorkItems.GetAsync(codex.Id))!.Status);
+    }
+
+    [TestMethod]
+    public async Task UsageExceededCreatesBothBlocksAndOnlyFreshUsageUnlocksResume()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex", "claude");
+        var project = await fixture.AddProjectAsync("interrupted");
+        var interrupted = await fixture.AddWorkItemAsync("codex", project, 80);
+        var sameProject = await fixture.AddWorkItemAsync("claude", project, 70);
+        await fixture.AddWorkItemAsync("claude", await fixture.AddProjectAsync("other"), 60);
+        fixture.Platform("codex").EnqueueResult(new(PlatformExecutionOutcome.UsageExceeded, 7,
+            "session-usage", "Limit erreicht", mayHavePartialChanges: true));
+
+        Assert.AreEqual(2, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        var stored = (await fixture.WorkItems.GetAsync(interrupted.Id))!;
+        Assert.AreEqual(WorkItemStatus.WartetAufUsage, stored.Status);
+        Assert.AreEqual(0, stored.NormalRetryCount);
+        Assert.AreEqual(1, (await fixture.Blocks.ListActivePlatformBlocksAsync()).Count);
+        Assert.AreEqual(1, (await fixture.Blocks.ListActiveProjectHoldsAsync()).Count);
+        var events = await fixture.History.ListEventsAsync(interrupted.Id);
+        Assert.IsTrue(events.Any(item => item.EventType == "usage_exceeded"
+            && item.Severity == ExecutionEventSeverity.Error && item.Data["autoCommit"] == "skipped"));
+
+        fixture.SetUnknownUsage("codex");
+        fixture.Clock.Advance(TimeSpan.FromHours(2));
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
+        Assert.AreEqual(1, (await fixture.Blocks.ListActivePlatformBlocksAsync()).Count);
+        Assert.AreEqual(0, fixture.Platform("claude").Requests.Count(request =>
+            string.Equals(request.WorkingDirectory, fixture.ProjectRoot(project), StringComparison.OrdinalIgnoreCase)));
+
+        fixture.SetUsage("codex", 1);
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        Assert.AreEqual("session-usage", fixture.Platform("codex").Requests.Last().SessionId);
+        Assert.AreEqual(0, (await fixture.Blocks.ListActivePlatformBlocksAsync()).Count);
+        Assert.AreEqual(0, (await fixture.Blocks.ListActiveProjectHoldsAsync()).Count);
+        Assert.AreEqual(WorkItemStatus.TechnischErfolgreich,
+            (await fixture.WorkItems.GetAsync(interrupted.Id))!.Status);
+        Assert.AreEqual(WorkItemStatus.InWarteschlange,
+            (await fixture.WorkItems.GetAsync(sameProject.Id))!.Status);
+    }
+
+    [TestMethod]
+    public async Task PausePreventsDispatchAndResumeContinues()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("paused"), 50);
+
+        fixture.Engine.Pause();
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
+        fixture.Engine.Resume();
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+    }
+
+    [TestMethod]
+    public async Task ControlledStopCancelsRunningWorkAsInterrupted()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("shutdown"), 50);
+        fixture.Platform("codex").EnqueueExecution(async (_, token) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return new(PlatformExecutionOutcome.Succeeded, 0);
+        });
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await WaitUntilAsync(() => fixture.Platform("codex").ActiveExecutions == 1);
+        await fixture.Engine.StopAsync();
+
+        Assert.AreEqual(WorkItemStatus.Unterbrochen, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (!condition()) await Task.Delay(10, timeout.Token);
+    }
+
+    private sealed class SchedulerFixture : IAsyncDisposable
+    {
+        private readonly string databasePath;
+        private readonly string directory;
+        private readonly Dictionary<string, FakeAiPlatform> platformMap;
+        private readonly Dictionary<string, FakeUsageProvider> usageMap;
+        private readonly Dictionary<ProjectId, string> projectRoots = [];
+        private readonly IDbContextFactory<KischedulerDbContext> contextFactory;
+
+        private SchedulerFixture(string databasePath, string directory,
+            Dictionary<string, FakeAiPlatform> platformMap,
+            Dictionary<string, FakeUsageProvider> usageMap,
+            IDbContextFactory<KischedulerDbContext> contextFactory,
+            SchedulerEngine engine, FakeClock clock)
+        {
+            this.databasePath = databasePath;
+            this.directory = directory;
+            this.platformMap = platformMap;
+            this.usageMap = usageMap;
+            this.contextFactory = contextFactory;
+            Engine = engine;
+            Clock = clock;
+            WorkItems = new(contextFactory);
+            Blocks = new(contextFactory);
+            History = new(contextFactory);
+        }
+
+        public SchedulerEngine Engine { get; }
+        public FakeClock Clock { get; }
+        public SqliteWorkItemRepository WorkItems { get; }
+        public SqliteExecutionBlockRepository Blocks { get; }
+        public SqliteExecutionHistoryRepository History { get; }
+
+        public static async Task<SchedulerFixture> CreateAsync(params string[] platformIds)
+        {
+            var directory = Path.Combine(Path.GetTempPath(), $"kischeduler-ap6-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(directory);
+            var databasePath = Path.Combine(directory, "scheduler.db");
+            var options = new DbContextOptionsBuilder<KischedulerDbContext>()
+                .UseSqlite($"Data Source={databasePath};Foreign Keys=True;Default Timeout=5").Options;
+            var factory = new TestContextFactory(options);
+            await using (var db = factory.CreateDbContext()) await db.Database.MigrateAsync();
+
+            var clock = new FakeClock(new DateTimeOffset(2026, 9, 11, 10, 0, 0, TimeSpan.Zero));
+            var platformMap = platformIds.ToDictionary(id => id, id => new FakeAiPlatform(new(id)),
+                StringComparer.OrdinalIgnoreCase);
+            var usageMap = platformIds.ToDictionary(id => id, id => new FakeUsageProvider(new(id)),
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var id in platformIds)
+                usageMap[id].SetCurrent(UsageReadResult.Available(CreateSnapshot(id, clock.UtcNow, 1)));
+
+            var platformRepository = new SqlitePlatformRepository(factory);
+            foreach (var id in platformIds)
+                await platformRepository.SaveAsync(new PlatformDefinition(new(id), id,
+                    [new PlatformModel(new("gpt"), [new("medium")])]));
+            await new SqliteUsagePolicyRepository(factory).ReplaceAsync(platformIds.Select(id =>
+                new UsagePolicy(new(id), [DayOfWeek.Friday], new TimeOnly(0, 0), new TimeOnly(23, 59),
+                    "UTC", new(75), UnknownUsageBehavior.Blockieren, TimeSpan.FromMinutes(5),
+                    endSprintDuration: TimeSpan.FromMinutes(30), endSprintMaxUsedPercent: new(100))).ToArray());
+
+            var workItems = new SqliteWorkItemRepository(factory);
+            var projects = new SqliteProjectRepository(factory);
+            var snapshots = new SqliteUsageSnapshotRepository(factory);
+            var history = new SqliteExecutionHistoryRepository(factory);
+            var blocks = new SqliteExecutionBlockRepository(factory);
+            var atomic = new SqliteAtomicExecutionRepository(factory);
+            var aiRegistry = new AiPlatformRegistry(platformMap.Values);
+            var usageRegistry = new UsageProviderRegistry(usageMap.Values);
+            var engine = new SchedulerEngine(workItems, projects, platformRepository,
+                new SqliteUsagePolicyRepository(factory), snapshots, history, blocks, atomic,
+                aiRegistry, usageRegistry, new PlatformConfigurationValidator(aiRegistry, usageRegistry),
+                new PhysicalFileSystem(), clock, new SchedulerOptions { AgingInterval = TimeSpan.FromMinutes(1) },
+                ownerId: "test-worker");
+            return new SchedulerFixture(databasePath, directory, platformMap, usageMap, factory, engine, clock);
+        }
+
+        public FakeAiPlatform Platform(string id) => platformMap[id];
+
+        public void SetUsage(string id, decimal used) => usageMap[id].SetCurrent(
+            UsageReadResult.Available(CreateSnapshot(id, Clock.UtcNow, used)));
+
+        public void SetUnknownUsage(string id) => usageMap[id].SetCurrent(UsageReadResult.Unknown("unbekannt"));
+
+        public async Task<ProjectId> AddProjectAsync(string name)
+        {
+            var id = ProjectId.New();
+            var root = Path.Combine(directory, name);
+            Directory.CreateDirectory(Path.Combine(root, "docs"));
+            projectRoots[id] = root;
+            await new SqliteProjectRepository(contextFactory).SaveAsync(new ProjectDefinition(id, name, root, "master"));
+            return id;
+        }
+
+        public string ProjectRoot(ProjectId id) => projectRoots[id];
+
+        public async Task<WorkItem> AddWorkItemAsync(string platformId, ProjectId projectId, int priority)
+        {
+            var prompt = Path.Combine(projectRoots[projectId], "docs", $"{Guid.NewGuid():N}.md");
+            await File.WriteAllTextAsync(prompt, "Implementiere das Arbeitspaket.");
+            var item = new WorkItem(WorkItemId.New(), prompt, new(priority), new(platformId), new("gpt"),
+                new("medium"), new(prompt), true, Clock.UtcNow, projectId);
+            item.TransitionTo(WorkItemStatus.InWarteschlange);
+            await WorkItems.SaveAsync(item);
+            return item;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Engine.DisposeAsync();
+            SqliteConnection.ClearAllPools();
+            try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
+        }
+
+        private static UsageSnapshot CreateSnapshot(string platformId, DateTimeOffset now, decimal used) =>
+            new(new(platformId), now, "fake", UsageQuality.Aktuell,
+                [new UsageWindow("primary", new(used), now.AddHours(1), "fake", now, UsageQuality.Aktuell)]);
+    }
+
+    private sealed class FakeClock(DateTimeOffset utcNow) : IClock
+    {
+        public DateTimeOffset UtcNow { get; private set; } = utcNow;
+        public void Advance(TimeSpan duration) => UtcNow += duration;
+    }
+
+    private sealed class TestContextFactory(DbContextOptions<KischedulerDbContext> options)
+        : IDbContextFactory<KischedulerDbContext>
+    {
+        public KischedulerDbContext CreateDbContext() => new(options);
+    }
+}

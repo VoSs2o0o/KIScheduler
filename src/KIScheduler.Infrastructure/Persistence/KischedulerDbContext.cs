@@ -63,7 +63,8 @@ public sealed class KischedulerDbContext(DbContextOptions<KischedulerDbContext> 
             entity.HasIndex(x => new { x.PlatformId, x.ModelId });
             entity.ToTable(table =>
             {
-                table.HasCheckConstraint("CK_UsagePolicies_MaxUsedPercent", "MaxUsedPercent >= 0 AND MaxUsedPercent <= 100");
+                table.HasCheckConstraint("CK_UsagePolicies_MaxUsedPercent",
+                    "CAST(MaxUsedPercent AS REAL) >= 0 AND CAST(MaxUsedPercent AS REAL) <= 100");
                 table.HasCheckConstraint("CK_UsagePolicies_RefreshInterval", "RefreshIntervalTicks > 0");
             });
         });
@@ -81,7 +82,8 @@ public sealed class KischedulerDbContext(DbContextOptions<KischedulerDbContext> 
             entity.Property(x => x.Source).HasMaxLength(500).IsRequired();
             entity.HasIndex(x => new { x.SnapshotId, x.Name }).IsUnique();
             entity.HasOne<UsageSnapshotRow>().WithMany().HasForeignKey(x => x.SnapshotId).OnDelete(DeleteBehavior.Cascade);
-            entity.ToTable(table => table.HasCheckConstraint("CK_UsageWindows_UsedPercent", "UsedPercent >= 0 AND UsedPercent <= 100"));
+            entity.ToTable(table => table.HasCheckConstraint("CK_UsageWindows_UsedPercent",
+                "CAST(UsedPercent AS REAL) >= 0 AND CAST(UsedPercent AS REAL) <= 100"));
         });
         modelBuilder.Entity<ExecutionAttemptRow>(entity =>
         {

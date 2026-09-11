@@ -3,6 +3,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using KIScheduler.Core.Scheduling;
 
 namespace KIScheduler.Infrastructure.Persistence;
 
@@ -34,6 +35,10 @@ public static class PersistenceServiceCollectionExtensions
         services.AddSingleton<IExecutionBlockRepository, SqliteExecutionBlockRepository>();
         services.AddSingleton<ISettingsRepository, SqliteSettingsRepository>();
         services.AddSingleton<IAtomicExecutionRepository, SqliteAtomicExecutionRepository>();
+        services.AddSingleton<IClock, SystemClock>();
+        services.AddSingleton<IFileSystem, PhysicalFileSystem>();
+        services.AddSingleton<UsagePolicyEvaluator>();
+        services.AddSingleton<SchedulerPriorityCalculator>();
         services.AddHostedService<DatabaseInitializationService>();
         return services;
     }
