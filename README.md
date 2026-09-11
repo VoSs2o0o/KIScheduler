@@ -1,6 +1,6 @@
 # KIScheduler
 
-KIScheduler wird eine lokale .NET-8-Windows-Forms-Anwendung zum Verwalten und Ausführen KI-generierter Arbeitspakete. Der aktuelle Stand enthält das technische Grundgerüst, das UI-unabhängige Domänenmodell, die lokale SQLite-Persistenz, einen sicheren lokalen Prozess-Runner sowie getrennte Verträge und Registries für KI-Plattformen und Usage-Provider; Scheduler- und konkrete CLI-Adapter folgen in späteren Arbeitspaketen.
+KIScheduler wird eine lokale .NET-8-Windows-Forms-Anwendung zum Verwalten und Ausführen KI-generierter Arbeitspakete. Der aktuelle Stand enthält das technische Grundgerüst, das UI-unabhängige Domänenmodell, die lokale SQLite-Persistenz, einen sicheren lokalen Prozess-Runner, Projektroot-Auflösung und kontrollierte Projekterzeugung sowie getrennte Verträge und Registries für KI-Plattformen und Usage-Provider; Scheduler- und konkrete CLI-Adapter folgen in späteren Arbeitspaketen.
 
 ## Voraussetzungen
 

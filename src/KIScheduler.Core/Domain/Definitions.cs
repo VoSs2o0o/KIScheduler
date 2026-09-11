@@ -5,13 +5,15 @@ namespace KIScheduler.Core.Domain;
 public sealed class ProjectDefinition
 {
     public ProjectDefinition(ProjectId id, string name, string rootPath, string targetBranch,
-        IEnumerable<ValidationCommand>? validationCommands = null)
+        IEnumerable<ValidationCommand>? validationCommands = null, string defaultTemplate = "classlib")
     {
         DomainValidation.Id(id.Value, nameof(id));
         Id = id;
         Name = DomainValidation.Required(name, nameof(name));
-        RootPath = DomainValidation.Required(rootPath, nameof(rootPath));
+        RootPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(
+            DomainValidation.Required(rootPath, nameof(rootPath))));
         TargetBranch = DomainValidation.Required(targetBranch, nameof(targetBranch));
+        DefaultTemplate = DomainValidation.Required(defaultTemplate, nameof(defaultTemplate));
         ValidationCommands = new ReadOnlyCollection<ValidationCommand>((validationCommands ?? []).ToList());
     }
 
@@ -19,6 +21,7 @@ public sealed class ProjectDefinition
     public string Name { get; }
     public string RootPath { get; }
     public string TargetBranch { get; }
+    public string DefaultTemplate { get; }
     public IReadOnlyList<ValidationCommand> ValidationCommands { get; }
 }
 

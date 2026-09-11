@@ -228,6 +228,11 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                         .HasMaxLength(300)
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("DefaultTemplate")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("RootPath")
                         .IsRequired()
                         .HasMaxLength(2048)

@@ -79,6 +79,26 @@ public sealed class SqlitePersistenceTests
     }
 
     [TestMethod]
+    public async Task ProjectConfigurationIncludingTemplateAndValidationCommandIsPersisted()
+    {
+        var repository = new SqliteProjectRepository(factory!);
+        var project = new ProjectDefinition(ProjectId.New(), "Konfiguriertes Projekt",
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")), "develop",
+            [new ValidationCommand("dotnet", ["test", "--no-restore"], required: true)], "webapi");
+
+        await repository.SaveAsync(project);
+        ProjectDefinition? restored = await new SqliteProjectRepository(factory!).GetAsync(project.Id);
+
+        Assert.IsNotNull(restored);
+        Assert.AreEqual("develop", restored.TargetBranch);
+        Assert.AreEqual("webapi", restored.DefaultTemplate);
+        Assert.AreEqual(1, restored.ValidationCommands.Count);
+        Assert.IsTrue(restored.ValidationCommands[0].Required);
+        CollectionAssert.AreEqual(new[] { "test", "--no-restore" },
+            restored.ValidationCommands[0].Arguments.ToArray());
+    }
+
+    [TestMethod]
     public async Task ConcurrentLeaseAttemptsReserveAWorkItemOnlyOnce()
     {
         var repository = new SqliteWorkItemRepository(factory!);

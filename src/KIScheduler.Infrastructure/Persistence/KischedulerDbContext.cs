@@ -42,6 +42,7 @@ public sealed class KischedulerDbContext(DbContextOptions<KischedulerDbContext> 
             entity.Property(x => x.Name).HasMaxLength(300).IsRequired();
             entity.Property(x => x.RootPath).HasMaxLength(2048).IsRequired();
             entity.Property(x => x.TargetBranch).HasMaxLength(255).IsRequired();
+            entity.Property(x => x.DefaultTemplate).HasMaxLength(255).IsRequired();
             entity.Property(x => x.ValidationCommandsJson).IsRequired();
             entity.HasIndex(x => x.RootPath).IsUnique();
         });
@@ -151,6 +152,7 @@ public sealed class ProjectRow
     public string Name { get; set; } = "";
     public string RootPath { get; set; } = "";
     public string TargetBranch { get; set; } = "";
+    public string DefaultTemplate { get; set; } = "classlib";
     public string ValidationCommandsJson { get; set; } = "[]";
 }
 

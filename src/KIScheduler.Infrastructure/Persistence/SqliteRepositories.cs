@@ -100,6 +100,7 @@ public sealed class SqliteProjectRepository(IDbContextFactory<KischedulerDbConte
             Name = project.Name,
             RootPath = project.RootPath,
             TargetBranch = project.TargetBranch,
+            DefaultTemplate = project.DefaultTemplate,
             ValidationCommandsJson = PersistenceMappings.Serialize(project.ValidationCommands
                 .Select(x => new ValidationCommandData(x.Executable, x.Arguments.ToArray(), x.Required)))
         };
@@ -109,7 +110,7 @@ public sealed class SqliteProjectRepository(IDbContextFactory<KischedulerDbConte
     }
     private static ProjectDefinition ToDomain(ProjectRow row) => new(new(row.Id), row.Name, row.RootPath, row.TargetBranch,
         (PersistenceMappings.Deserialize<List<ValidationCommandData>>(row.ValidationCommandsJson) ?? [])
-            .Select(x => new ValidationCommand(x.Executable, x.Arguments, x.Required)));
+            .Select(x => new ValidationCommand(x.Executable, x.Arguments, x.Required)), row.DefaultTemplate);
     private sealed record ValidationCommandData(string Executable, string[] Arguments, bool Required);
 }
 

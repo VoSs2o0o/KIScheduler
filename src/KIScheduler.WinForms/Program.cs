@@ -1,6 +1,7 @@
 using KIScheduler.Infrastructure.Logging;
 using KIScheduler.Infrastructure.Persistence;
 using KIScheduler.Infrastructure.Processes;
+using KIScheduler.Infrastructure.Projects;
 using KIScheduler.Platforms;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -50,6 +51,7 @@ internal static class Program
                     context.Configuration,
                     context.HostingEnvironment.ContentRootPath);
                 services.AddKischedulerProcessRunner();
+                services.AddKischedulerProjectServices();
                 services.AddKischedulerPlatformServices();
                 services.AddSingleton<MainForm>();
                 services.AddHostedService<SchedulerWorker>();
