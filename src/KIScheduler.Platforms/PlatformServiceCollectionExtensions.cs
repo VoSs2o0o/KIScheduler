@@ -1,4 +1,5 @@
 using KIScheduler.Core.Contracts;
+using KIScheduler.Platforms.Claude;
 using KIScheduler.Platforms.Codex;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -43,6 +44,18 @@ public static class PlatformServiceCollectionExtensions
         services.AddSingleton<ICodexAppServerClient, CodexAppServerClient>();
         services.AddAiPlatform<CodexPlatform>();
         services.AddUsageProvider<CodexUsageProvider>();
+        return services;
+    }
+
+    public static IServiceCollection AddClaudePlatform(this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+        services.Configure<ClaudeOptions>(configuration.GetSection(ClaudeOptions.SectionName));
+        services.AddSingleton<CommandRegexReader>();
+        services.AddAiPlatform<ClaudePlatform>();
+        services.AddUsageProvider<ClaudeUsageProvider>();
         return services;
     }
 }

@@ -1,6 +1,6 @@
 # KIScheduler
 
-KIScheduler wird eine lokale .NET-8-Windows-Forms-Anwendung zum Verwalten und Ausführen KI-generierter Arbeitspakete. Der aktuelle Stand enthält das technische Grundgerüst, das UI-unabhängige Domänenmodell, die lokale SQLite-Persistenz, einen sicheren lokalen Prozess-Runner, Projektroot-Auflösung und kontrollierte Projekterzeugung, getrennte Verträge und Registries für KI-Plattformen und Usage-Provider sowie den prioritäts-, projekt- und usage-gesteuerten Scheduler. Codex-Aufträge werden nicht-interaktiv als JSONL ausgeführt; Rate-Limits stammen getrennt davon aus dem dokumentierten Codex App Server.
+KIScheduler wird eine lokale .NET-8-Windows-Forms-Anwendung zum Verwalten und Ausführen KI-generierter Arbeitspakete. Der aktuelle Stand enthält das technische Grundgerüst, das UI-unabhängige Domänenmodell, die lokale SQLite-Persistenz, einen sicheren lokalen Prozess-Runner, Projektroot-Auflösung und kontrollierte Projekterzeugung, getrennte Verträge und Registries für KI-Plattformen und Usage-Provider sowie den prioritäts-, projekt- und usage-gesteuerten Scheduler. Codex- und Claude-Aufträge werden nicht-interaktiv als JSONL ausgeführt; ihre Usage-Quellen bleiben unabhängig von der Ausführung austauschbar.
 
 ## Voraussetzungen
 
@@ -38,3 +38,9 @@ Der Leitfaden [docs/PLATFORM_ADAPTERS.md](docs/PLATFORM_ADAPTERS.md) beschreibt,
 Die installierte Codex CLI wird über `codex exec - --json` verwendet. Prompt, Modell und Reasoning-Effort werden pro Auftrag fest übergeben. Für Usage hält `CodexUsageProvider` eine wiederverwendbare stdio-Verbindung zu `codex app-server`, liest `account/rateLimits/read` und verarbeitet `account/rateLimits/updated`. `account/usage/read` wird nicht zur Startfreigabe verwendet.
 
 Executable, Sandbox, Timeouts, Cache-Dauer und App-Server-Argumente sind im Abschnitt `Codex` der `appsettings.json` konfigurierbar. Authentifizierungs-, Verbindungs- und Protokollfehler führen zu explizit unbekannter Usage; es gibt keinen Rückfall auf private HTTP-Endpunkte.
+
+## Claude-Integration
+
+`ClaudePlatform` verwendet den Print-Modus der Claude CLI mit Stream-JSON, reicht Prompt, Modell und Effort separat weiter und unterstützt die Fortsetzung anhand einer Session-ID. Ein während der Ausführung erkanntes Usage-Limit wird als `UsageExceeded` klassifiziert.
+
+`ClaudeUsageProvider` liest einen frei konfigurierbaren Kommando-Output mit einem Regex. Standardmäßig wird `Current session: <n>% used` erkannt. Kommando, Argumente, Regex, Kultur, Einheit sowie Kommando- und Regex-Timeout sind im Abschnitt `Claude:Usage` konfigurierbar. Da Claude Code keinen stabilen maschinenlesbaren Usage-Endpunkt dokumentiert, muss der konfigurierte Usage-Befehl gegen die lokal installierte CLI-Version geprüft und bei Bedarf durch ein eigenes Probe-Kommando ersetzt werden. Eine Resetzeit kann über die benannte Regex-Gruppe `reset` oder `ConfiguredResetAtUtc` geliefert werden; ohne Resetzeit bleibt die Endspurtregel inaktiv.

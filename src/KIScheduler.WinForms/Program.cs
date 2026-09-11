@@ -55,6 +55,7 @@ internal static class Program
                 services.AddKischedulerProjectServices();
                 services.AddKischedulerPlatformServices();
                 services.AddCodexPlatform(context.Configuration);
+                services.AddClaudePlatform(context.Configuration);
                 var schedulerOptions = new SchedulerOptions();
                 context.Configuration.GetSection("Scheduler").Bind(schedulerOptions);
                 schedulerOptions.Validate();
