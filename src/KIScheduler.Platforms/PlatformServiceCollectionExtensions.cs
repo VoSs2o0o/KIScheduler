@@ -40,7 +40,20 @@ public static class PlatformServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
-        services.Configure<CodexOptions>(configuration.GetSection(CodexOptions.SectionName));
+        var section = configuration.GetSection(CodexOptions.SectionName);
+        services.AddOptions<CodexOptions>().Configure(options =>
+        {
+            section.Bind(options);
+
+            // The configuration binder appends indexed values to initialized
+            // collections. Replace this collection explicitly so the default
+            // app-server command is not duplicated.
+            var configuredArguments = section
+                .GetSection(nameof(CodexOptions.AppServerArguments))
+                .Get<string[]>();
+            if (configuredArguments is { Length: > 0 })
+                options.AppServerArguments = [.. configuredArguments];
+        });
         services.AddSingleton<ICodexAppServerClient, CodexAppServerClient>();
         services.AddAiPlatform<CodexPlatform>();
         services.AddUsageProvider<CodexUsageProvider>();

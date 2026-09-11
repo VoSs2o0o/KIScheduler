@@ -5,6 +5,8 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using KIScheduler.Core.Contracts;
+using KIScheduler.Core.Domain;
 
 namespace KIScheduler.Platforms.Codex;
 
@@ -12,9 +14,11 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
 {
     private readonly CodexOptions options;
     private readonly ILogger<CodexAppServerClient> logger;
+    private readonly IPlatformRepository? platformRepository;
     private readonly SemaphoreSlim connectionGate = new(1, 1);
     private readonly SemaphoreSlim writeGate = new(1, 1);
     private readonly ConcurrentDictionary<long, TaskCompletionSource<JsonElement>> pending = new();
+    private readonly ConcurrentQueue<string> standardError = new();
     private readonly CancellationTokenSource lifetime = new();
     private Process? process;
     private Task? readTask;
@@ -23,11 +27,13 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
     private bool initialized;
     private bool disposed;
 
-    public CodexAppServerClient(IOptions<CodexOptions> options, ILogger<CodexAppServerClient> logger)
+    public CodexAppServerClient(IOptions<CodexOptions> options, ILogger<CodexAppServerClient> logger,
+        IPlatformRepository? platformRepository = null)
     {
         this.options = options?.Value ?? throw new ArgumentNullException(nameof(options));
         this.options.Validate();
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        this.platformRepository = platformRepository;
     }
 
     public event EventHandler<CodexRateLimitsChangedEventArgs>? RateLimitsChanged;
@@ -56,7 +62,7 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
         {
             if (initialized && process is { HasExited: false }) return;
             await StopProcessAsync().ConfigureAwait(false);
-            StartProcess();
+            await StartProcessAsync(cancellationToken).ConfigureAwait(false);
 
             _ = await SendRequestCoreAsync("initialize", new
             {
@@ -82,11 +88,16 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
         }
     }
 
-    private void StartProcess()
+    private async Task StartProcessAsync(CancellationToken cancellationToken)
     {
+        while (standardError.TryDequeue(out _)) { }
+        var executable = platformRepository is null
+            ? options.Executable
+            : (await platformRepository.GetAsync(CodexPlatform.Id, cancellationToken).ConfigureAwait(false))?.Executable
+                ?? options.Executable;
         var startInfo = new ProcessStartInfo
         {
-            FileName = options.Executable,
+            FileName = executable,
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardInput = true,
@@ -97,6 +108,12 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
             StandardErrorEncoding = Encoding.UTF8
         };
         foreach (string argument in options.AppServerArguments) startInfo.ArgumentList.Add(argument);
+        foreach ((string name, string value) in CodexProcessEnvironment.ForExecutable(executable))
+            startInfo.Environment[name] = value;
+
+        logger.LogInformation("Starting Codex App Server {Executable} with arguments {Arguments}; user profile: {UserProfile}",
+            executable, string.Join(' ', options.AppServerArguments),
+            startInfo.Environment.TryGetValue("USERPROFILE", out var profile) ? profile : "<inherited>");
 
         process = new Process { StartInfo = startInfo };
         if (!process.Start())
@@ -222,8 +239,13 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
             }
 
             if (!cancellationToken.IsCancellationRequested)
+            {
+                // stderr and stdout are drained independently. Give the diagnostic reader a brief
+                // chance to observe the final process error before composing the user-facing message.
+                await Task.Delay(100, CancellationToken.None).ConfigureAwait(false);
                 failure = new CodexAppServerException(CodexAppServerFailureKind.Connection,
-                    "Der Codex App Server hat die Verbindung beendet.");
+                    BuildConnectionEndedMessage());
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -257,12 +279,30 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
     {
         try
         {
-            while (await activeProcess.StandardError.ReadLineAsync(cancellationToken).ConfigureAwait(false) is not null)
-                logger.LogDebug("Codex App Server hat eine Diagnosezeile auf stderr ausgegeben.");
+            while (await activeProcess.StandardError.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+            {
+                standardError.Enqueue(RedactDiagnostic(line));
+                while (standardError.Count > 20) standardError.TryDequeue(out _);
+                logger.LogWarning("Codex App Server stderr: {Diagnostic}", RedactDiagnostic(line));
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
+    }
+
+    private string BuildConnectionEndedMessage()
+    {
+        var diagnostic = standardError.LastOrDefault(x => !string.IsNullOrWhiteSpace(x));
+        return diagnostic is null
+            ? "Der Codex App Server hat die Verbindung beendet."
+            : $"Der Codex App Server hat die Verbindung beendet: {diagnostic}";
+    }
+
+    private static string RedactDiagnostic(string value)
+    {
+        var marker = value.IndexOf("Bearer ", StringComparison.OrdinalIgnoreCase);
+        return marker < 0 ? value : value[..marker] + "Bearer <redacted>";
     }
 
     private static CodexAppServerFailureKind ClassifyServerError(string message) =>

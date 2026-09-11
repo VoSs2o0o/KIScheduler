@@ -9,12 +9,15 @@ public sealed class ClaudeUsageProvider : IUsageProvider
     private readonly CommandRegexReader reader;
     private readonly IClock clock;
     private readonly ClaudeOptions options;
+    private readonly IPlatformRepository? platformRepository;
 
-    public ClaudeUsageProvider(CommandRegexReader reader, IClock clock, IOptions<ClaudeOptions> options)
+    public ClaudeUsageProvider(CommandRegexReader reader, IClock clock, IOptions<ClaudeOptions> options,
+        IPlatformRepository? platformRepository = null)
     {
         this.reader = reader ?? throw new ArgumentNullException(nameof(reader));
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
         this.options = options?.Value ?? throw new ArgumentNullException(nameof(options));
+        this.platformRepository = platformRepository;
         this.options.Validate();
     }
 
@@ -32,7 +35,11 @@ public sealed class ClaudeUsageProvider : IUsageProvider
         CancellationToken cancellationToken = default)
     {
         _ = forceRefresh; // This polling provider intentionally does not cache reads.
-        CommandRegexReadResult read = await reader.ReadAsync(CreateRequest(), cancellationToken)
+        var executable = platformRepository is null
+            ? options.Usage.Executable
+            : (await platformRepository.GetAsync(ClaudePlatform.Id, cancellationToken).ConfigureAwait(false))?.Executable
+                ?? options.Usage.Executable;
+        CommandRegexReadResult read = await reader.ReadAsync(CreateRequest(executable), cancellationToken)
             .ConfigureAwait(false);
 
         if (read.Process.TerminationReason == ProcessTerminationReason.StartFailed)
@@ -80,12 +87,12 @@ public sealed class ClaudeUsageProvider : IUsageProvider
         }
     }
 
-    private CommandRegexReadRequest CreateRequest()
+    private CommandRegexReadRequest CreateRequest(string? executable = null)
     {
         ClaudeUsageOptions usage = options.Usage;
         return new CommandRegexReadRequest
         {
-            Executable = usage.Executable,
+            Executable = executable ?? usage.Executable,
             Arguments = usage.Arguments,
             Pattern = usage.Pattern,
             UsedGroupName = usage.UsedGroupName,

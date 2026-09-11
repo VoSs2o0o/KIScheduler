@@ -179,6 +179,39 @@ public sealed class SchedulerEngineTests
     }
 
     [TestMethod]
+    public async Task ManualCancelStopsRunningWorkAsCancelled()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("cancel"), 50);
+        fixture.Platform("codex").EnqueueExecution(async (_, token) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return new(PlatformExecutionOutcome.Succeeded, 0);
+        });
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await WaitUntilAsync(() => fixture.Platform("codex").ActiveExecutions == 1);
+        Assert.IsTrue(await fixture.Engine.CancelAsync(item.Id));
+        await fixture.Engine.WaitForIdleAsync();
+
+        Assert.AreEqual(WorkItemStatus.Abgebrochen, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+    }
+
+    [TestMethod]
+    public async Task ManualCancelMovesQueuedWorkWithoutStartingPlatform()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("cancel-queued"), 50);
+
+        Assert.IsTrue(await fixture.Engine.CancelAsync(item.Id));
+
+        Assert.AreEqual(WorkItemStatus.Abgebrochen, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+        Assert.AreEqual(0, fixture.Platform("codex").Requests.Count);
+        Assert.IsTrue((await fixture.History.ListEventsAsync(item.Id))
+            .Any(x => x.EventType == "execution.cancelled"));
+    }
+
+    [TestMethod]
     public async Task AutoCommitPreflightFailureDoesNotStartPlatform()
     {
         await using var fixture = await SchedulerFixture.CreateAsync("codex");

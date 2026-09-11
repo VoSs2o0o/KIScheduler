@@ -9,11 +9,14 @@ public sealed class ClaudePlatform : IAiPlatform
     public static readonly PlatformId Id = new("claude");
     private readonly IProcessRunner processRunner;
     private readonly ClaudeOptions options;
+    private readonly IPlatformRepository? platformRepository;
 
-    public ClaudePlatform(IProcessRunner processRunner, IOptions<ClaudeOptions> options)
+    public ClaudePlatform(IProcessRunner processRunner, IOptions<ClaudeOptions> options,
+        IPlatformRepository? platformRepository = null)
     {
         this.processRunner = processRunner ?? throw new ArgumentNullException(nameof(processRunner));
         this.options = options?.Value ?? throw new ArgumentNullException(nameof(options));
+        this.platformRepository = platformRepository;
         this.options.Validate();
     }
 
@@ -22,7 +25,8 @@ public sealed class ClaudePlatform : IAiPlatform
 
     public async Task<PlatformHealth> CheckAvailabilityAsync(CancellationToken cancellationToken = default)
     {
-        ProcessRunResult result = await processRunner.RunAsync(new ProcessRunRequest(options.Executable)
+        ProcessRunResult result = await processRunner.RunAsync(new ProcessRunRequest(
+            await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false))
         {
             Arguments = ["--version"],
             Timeout = options.AvailabilityTimeout
@@ -49,7 +53,8 @@ public sealed class ClaudePlatform : IAiPlatform
         if (!string.Equals(request.PlatformId.Value, Id.Value, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Die Ausführungsanfrage gehört nicht zur Claude-Plattform.", nameof(request));
 
-        ProcessRunResult process = await processRunner.RunAsync(new ProcessRunRequest(options.Executable)
+        ProcessRunResult process = await processRunner.RunAsync(new ProcessRunRequest(
+            await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false))
         {
             Arguments = BuildArguments(request),
             WorkingDirectory = request.WorkingDirectory,
@@ -113,6 +118,12 @@ public sealed class ClaudePlatform : IAiPlatform
         arguments.AddRange(options.AdditionalArguments);
         return arguments;
     }
+
+    private async Task<string> ResolveExecutableAsync(CancellationToken cancellationToken) =>
+        platformRepository is null
+            ? options.Executable
+            : (await platformRepository.GetAsync(Id, cancellationToken).ConfigureAwait(false))?.Executable
+                ?? options.Executable;
 
     private static string? FirstNonEmpty(params IReadOnlyList<string>[] groups) => groups
         .SelectMany(group => group)

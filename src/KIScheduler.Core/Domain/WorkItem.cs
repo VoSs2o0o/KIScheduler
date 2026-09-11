@@ -128,6 +128,8 @@ public sealed class WorkItem
         Effort = effort ?? throw new ArgumentNullException(nameof(effort));
     }
 
+    public void ChangeTitle(string title) => Title = DomainValidation.Required(title, nameof(title));
+
     public void ChangePlanning(WorkItemPriority priority, PromptPath promptPath, bool autoCommit, ProjectId? projectId)
     {
         Priority = priority;

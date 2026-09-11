@@ -9,11 +9,14 @@ public sealed class CodexPlatform : IAiPlatform
     public static readonly PlatformId Id = new("codex");
     private readonly IProcessRunner processRunner;
     private readonly CodexOptions options;
+    private readonly IPlatformRepository? platformRepository;
 
-    public CodexPlatform(IProcessRunner processRunner, IOptions<CodexOptions> options)
+    public CodexPlatform(IProcessRunner processRunner, IOptions<CodexOptions> options,
+        IPlatformRepository? platformRepository = null)
     {
         this.processRunner = processRunner ?? throw new ArgumentNullException(nameof(processRunner));
         this.options = options?.Value ?? throw new ArgumentNullException(nameof(options));
+        this.platformRepository = platformRepository;
         this.options.Validate();
     }
 
@@ -22,9 +25,11 @@ public sealed class CodexPlatform : IAiPlatform
 
     public async Task<PlatformHealth> CheckAvailabilityAsync(CancellationToken cancellationToken = default)
     {
-        ProcessRunResult result = await processRunner.RunAsync(new ProcessRunRequest(options.Executable)
+        var executable = await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false);
+        ProcessRunResult result = await processRunner.RunAsync(new ProcessRunRequest(executable)
         {
             Arguments = ["--version"],
+            EnvironmentVariables = CodexProcessEnvironment.ForExecutable(executable),
             Timeout = options.AvailabilityTimeout
         }, cancellationToken).ConfigureAwait(false);
 
@@ -49,9 +54,11 @@ public sealed class CodexPlatform : IAiPlatform
         if (!string.Equals(request.PlatformId.Value, Id.Value, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Die Ausführungsanfrage gehört nicht zur Codex-Plattform.", nameof(request));
 
-        ProcessRunResult processResult = await processRunner.RunAsync(new ProcessRunRequest(options.Executable)
+        var executable = await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false);
+        ProcessRunResult processResult = await processRunner.RunAsync(new ProcessRunRequest(executable)
         {
             Arguments = BuildArguments(request),
+            EnvironmentVariables = CodexProcessEnvironment.ForExecutable(executable),
             WorkingDirectory = request.WorkingDirectory,
             StandardInput = request.Prompt,
             Timeout = request.Timeout,
@@ -119,6 +126,12 @@ public sealed class CodexPlatform : IAiPlatform
 
         return arguments;
     }
+
+    private async Task<string> ResolveExecutableAsync(CancellationToken cancellationToken) =>
+        platformRepository is null
+            ? options.Executable
+            : (await platformRepository.GetAsync(Id, cancellationToken).ConfigureAwait(false))?.Executable
+                ?? options.Executable;
 
     private static string EscapeToml(string value) => value.Replace("\\", "\\\\", StringComparison.Ordinal)
         .Replace("\"", "\\\"", StringComparison.Ordinal);

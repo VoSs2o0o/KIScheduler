@@ -1,6 +1,9 @@
 using KIScheduler.Core.Contracts;
 using KIScheduler.Core.Domain;
+using KIScheduler.Platforms;
 using KIScheduler.Platforms.Codex;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -11,6 +14,25 @@ namespace KIScheduler.Tests.Platforms;
 public sealed class CodexAdapterTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 11, 12, 0, 0, TimeSpan.Zero);
+
+    [TestMethod]
+    public void ConfigurationReplacesDefaultAppServerArgumentsInsteadOfAppendingThem()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Codex:AppServerArguments:0"] = "custom-app-server",
+                ["Codex:AppServerArguments:1"] = "--custom"
+            })
+            .Build();
+        var services = new ServiceCollection();
+
+        services.AddCodexPlatform(configuration);
+        using ServiceProvider provider = services.BuildServiceProvider();
+        CodexOptions options = provider.GetRequiredService<IOptions<CodexOptions>>().Value;
+
+        CollectionAssert.AreEqual(new[] { "custom-app-server", "--custom" }, options.AppServerArguments);
+    }
 
     [TestMethod]
     public void JsonlParserExtractsSessionEventsAndFinalMessageAndIgnoresAdditionalFields()

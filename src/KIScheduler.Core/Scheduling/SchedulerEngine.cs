@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.RegularExpressions;
 using KIScheduler.Core.Contracts;
 using KIScheduler.Core.Domain;
 
@@ -10,6 +11,7 @@ public interface ISchedulerEngine : IAsyncDisposable
     int RunningCount { get; }
     void Pause();
     void Resume();
+    Task<bool> CancelAsync(WorkItemId workItemId, CancellationToken cancellationToken = default);
     Task<int> RunCycleAsync(CancellationToken cancellationToken = default);
     Task WaitForIdleAsync(CancellationToken cancellationToken = default);
     Task StopAsync(CancellationToken cancellationToken = default);
@@ -45,6 +47,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
     private readonly SemaphoreSlim cycleGate = new(1, 1);
     private readonly object runningGate = new();
     private readonly Dictionary<string, Task> runningByPlatform = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<WorkItemId, CancellationTokenSource> cancellationByWorkItem = [];
     private readonly HashSet<ProjectId> runningProjects = [];
     private readonly CancellationTokenSource shutdown = new();
     private volatile bool paused;
@@ -91,6 +94,28 @@ public sealed class SchedulerEngine : ISchedulerEngine
     {
         ObjectDisposedException.ThrowIf(stopped, this);
         paused = false;
+    }
+
+    public async Task<bool> CancelAsync(WorkItemId workItemId, CancellationToken cancellationToken = default)
+    {
+        CancellationTokenSource? runningCancellation;
+        lock (runningGate) cancellationByWorkItem.TryGetValue(workItemId, out runningCancellation);
+        if (runningCancellation is not null)
+        {
+            await runningCancellation.CancelAsync().ConfigureAwait(false);
+            return true;
+        }
+
+        var item = await workItems.GetAsync(workItemId, cancellationToken).ConfigureAwait(false);
+        if (item is null || !WorkItemStateMachine.CanTransition(item.Status, WorkItemStatus.Abgebrochen)) return false;
+        item.TransitionTo(WorkItemStatus.Abgebrochen);
+        await workItems.SaveAsync(item, cancellationToken).ConfigureAwait(false);
+        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+            ExecutionEventSeverity.Information, "execution.cancelled", "Auftrag wurde manuell abgebrochen.", data:
+            new Dictionary<string, string> { ["reasonCode"] = "execution.cancelled_by_user" }), cancellationToken)
+            .ConfigureAwait(false);
+        await ReleaseProjectHoldsAsync(item, clock.UtcNow).ConfigureAwait(false);
+        return true;
     }
 
     public async Task<int> RunCycleAsync(CancellationToken cancellationToken = default)
@@ -193,9 +218,9 @@ public sealed class SchedulerEngine : ISchedulerEngine
                 }
 
                 item.TransitionTo(WorkItemStatus.Reserviert);
-                ReserveRunning(item);
-                var execution = ExecuteReservedAsync(item, lease, resume.SessionId);
-                TrackExecution(item, execution);
+                var itemCancellation = ReserveRunning(item);
+                var execution = ExecuteReservedAsync(item, lease, resume.SessionId, itemCancellation.Token);
+                TrackExecution(item, execution, itemCancellation);
                 dispatched++;
             }
 
@@ -290,13 +315,14 @@ public sealed class SchedulerEngine : ISchedulerEngine
         return (true, available, available ? interrupted!.SessionId : null);
     }
 
-    private async Task ExecuteReservedAsync(WorkItem item, SchedulerLease lease, string? resumeSessionId)
+    private async Task ExecuteReservedAsync(WorkItem item, SchedulerLease lease, string? resumeSessionId,
+        CancellationToken itemCancellationToken)
     {
         var startedAt = clock.UtcNow;
         ExecutionAttempt? attempt = null;
         try
         {
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token, itemCancellationToken);
             linked.CancelAfter(options.ExecutionTimeout);
             var cancellationToken = linked.Token;
 
@@ -357,6 +383,11 @@ public sealed class SchedulerEngine : ISchedulerEngine
                 result = new PlatformExecutionResult(PlatformExecutionOutcome.Cancelled,
                     message: "Ausführung wegen kontrolliertem Herunterfahren unterbrochen.", mayHavePartialChanges: true);
             }
+            catch (OperationCanceledException) when (itemCancellationToken.IsCancellationRequested)
+            {
+                result = new PlatformExecutionResult(PlatformExecutionOutcome.Cancelled,
+                    message: "Ausführung wurde manuell abgebrochen.", mayHavePartialChanges: true);
+            }
             catch (OperationCanceledException)
             {
                 result = new PlatformExecutionResult(PlatformExecutionOutcome.TimedOut,
@@ -366,6 +397,17 @@ public sealed class SchedulerEngine : ISchedulerEngine
             {
                 result = new PlatformExecutionResult(PlatformExecutionOutcome.HumanReviewRequired,
                     message: exception.Message, mayHavePartialChanges: true);
+            }
+
+            foreach (var platformEvent in result.Events)
+            {
+                await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+                    ExecutionEventSeverity.Information, $"platform.{platformEvent.Type}",
+                    RedactSensitiveOutput(platformEvent.Json), data: new Dictionary<string, string>
+                    {
+                        ["reasonCode"] = "platform.output",
+                        ["stream"] = "structured"
+                    }), CancellationToken.None).ConfigureAwait(false);
             }
 
             if (!item.AutoCommit || result.Outcome != PlatformExecutionOutcome.Succeeded)
@@ -421,6 +463,30 @@ public sealed class SchedulerEngine : ISchedulerEngine
             if (item.Status is WorkItemStatus.TechnischErfolgreich or WorkItemStatus.ErfolgreichMitWarnung
                 or WorkItemStatus.Abgebrochen)
                 await ReleaseProjectHoldsAsync(item, completedAt).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (itemCancellationToken.IsCancellationRequested)
+        {
+            if (item.Status == WorkItemStatus.Reserviert) item.TransitionTo(WorkItemStatus.Abgebrochen);
+            else if (item.Status == WorkItemStatus.InBearbeitung)
+                item.CompleteCurrentAttempt(ExecutionAttemptResult.Abgebrochen);
+            await workItems.SaveAsync(item, CancellationToken.None).ConfigureAwait(false);
+            await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+                ExecutionEventSeverity.Information, "execution.cancelled", "Auftrag wurde manuell abgebrochen.", data:
+                new Dictionary<string, string> { ["reasonCode"] = "execution.cancelled_by_user" }),
+                CancellationToken.None).ConfigureAwait(false);
+            await ReleaseProjectHoldsAsync(item, clock.UtcNow).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (shutdown.IsCancellationRequested)
+        {
+            if (item.Status == WorkItemStatus.Reserviert) item.TransitionTo(WorkItemStatus.Unterbrochen);
+            else if (item.Status == WorkItemStatus.InBearbeitung)
+                item.CompleteCurrentAttempt(ExecutionAttemptResult.Unterbrochen);
+            await workItems.SaveAsync(item, CancellationToken.None).ConfigureAwait(false);
+            await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+                ExecutionEventSeverity.Warning, "execution.interrupted",
+                "Auftrag wurde beim kontrollierten Herunterfahren unterbrochen.", data:
+                new Dictionary<string, string> { ["reasonCode"] = "execution.shutdown" }),
+                CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception exception)
         {
@@ -544,7 +610,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
             }, "git.after", result.Message, data: data), cancellationToken);
     }
 
-    private void ReserveRunning(WorkItem item)
+    private CancellationTokenSource ReserveRunning(WorkItem item)
     {
         lock (runningGate)
         {
@@ -552,10 +618,13 @@ public sealed class SchedulerEngine : ISchedulerEngine
                 || (item.ProjectId is { } projectId && runningProjects.Contains(projectId)))
                 throw new InvalidOperationException("Die lokale Scheduler-Kapazität wurde gleichzeitig belegt.");
             if (item.ProjectId is { } id) runningProjects.Add(id);
+            var cancellation = new CancellationTokenSource();
+            cancellationByWorkItem[item.Id] = cancellation;
+            return cancellation;
         }
     }
 
-    private void TrackExecution(WorkItem item, Task execution)
+    private void TrackExecution(WorkItem item, Task execution, CancellationTokenSource itemCancellation)
     {
         lock (runningGate) runningByPlatform[item.PlatformId.Value] = execution;
         _ = execution.ContinueWith(_ =>
@@ -563,8 +632,10 @@ public sealed class SchedulerEngine : ISchedulerEngine
             lock (runningGate)
             {
                 runningByPlatform.Remove(item.PlatformId.Value);
+                cancellationByWorkItem.Remove(item.Id);
                 if (item.ProjectId is { } projectId) runningProjects.Remove(projectId);
             }
+            itemCancellation.Dispose();
         }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 
@@ -592,4 +663,13 @@ public sealed class SchedulerEngine : ISchedulerEngine
 
     private static bool PlatformEquals(PlatformId left, PlatformId right) =>
         string.Equals(left.Value, right.Value, StringComparison.OrdinalIgnoreCase);
+
+    private static string RedactSensitiveOutput(string value)
+    {
+        value = Regex.Replace(value,
+            "(?i)(\\\"?(?:authorization|access_token|api_key|secret|token)\\\"?\\s*[:=]\\s*\\\")[^\\\"]*(\\\")",
+            "$1<redacted>$2", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+        return Regex.Replace(value, "(?i)Bearer\\s+[A-Za-z0-9._~+/-]+=*", "Bearer <redacted>",
+            RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+    }
 }

@@ -9,6 +9,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Data.Sqlite;
+using System.Text.Json;
 
 namespace KIScheduler.WinForms;
 
@@ -38,6 +40,7 @@ internal static class Program
             .ConfigureAppConfiguration((_, configuration) =>
             {
                 configuration.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
+                AddPersistedSettings(configuration);
             })
             .ConfigureLogging((context, logging) =>
             {
@@ -63,7 +66,44 @@ internal static class Program
                 schedulerOptions.Validate();
                 services.AddSingleton(schedulerOptions);
                 services.AddSingleton<ISchedulerEngine, SchedulerEngine>();
+                services.AddSingleton<SchedulerUiService>();
                 services.AddSingleton<MainForm>();
+                services.AddHostedService<UiDefaultsInitializer>();
                 services.AddHostedService<SchedulerWorker>();
             });
+
+    private static void AddPersistedSettings(IConfigurationBuilder configuration)
+    {
+        try
+        {
+            var current = configuration.Build();
+            var configuredPath = current["Persistence:DatabasePath"];
+            var databasePath = Path.GetFullPath(string.IsNullOrWhiteSpace(configuredPath)
+                ? Path.Combine("data", "kischeduler.db") : configuredPath, AppContext.BaseDirectory);
+            if (!File.Exists(databasePath)) return;
+            using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+            { DataSource = databasePath, Mode = SqliteOpenMode.ReadOnly }.ToString());
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT Key, Value FROM Settings";
+            using var reader = command.ExecuteReader();
+            var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            while (reader.Read())
+            {
+                var key = reader.GetString(0).Replace('.', ':');
+                var value = reader.GetString(1);
+                if (key.Equals("Codex:AppServerArguments", StringComparison.OrdinalIgnoreCase))
+                {
+                    var arguments = JsonSerializer.Deserialize<string[]>(value) ?? [];
+                    for (var i = 0; i < arguments.Length; i++) values[$"{key}:{i}"] = arguments[i];
+                }
+                else values[key] = value;
+            }
+            configuration.AddInMemoryCollection(values);
+        }
+        catch (SqliteException)
+        {
+            // On first start the database or Settings table does not exist yet.
+        }
+    }
 }

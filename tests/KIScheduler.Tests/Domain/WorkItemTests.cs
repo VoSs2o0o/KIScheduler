@@ -7,6 +7,16 @@ namespace KIScheduler.Tests.Domain;
 public sealed class WorkItemTests
 {
     [TestMethod]
+    public void TitleCanBeChangedWithDomainValidation()
+    {
+        var item = CreateWorkItem();
+
+        item.ChangeTitle("  Neuer Titel  ");
+
+        Assert.AreEqual("Neuer Titel", item.Title);
+        Assert.ThrowsException<ArgumentException>(() => item.ChangeTitle(" "));
+    }
+    [TestMethod]
     public void CommitMessageCanBeDerivedFromApFileAndOverridden()
     {
         var item = new WorkItem(WorkItemId.New(), "Git-Prüfung und Auto-Commit", new(50), new("codex"),
