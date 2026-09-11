@@ -64,13 +64,15 @@ public sealed class LocalProcessRunner(ILogger<LocalProcessRunner> logger) : IPr
             ProcessOutputStream.StandardOutput,
             output,
             () => Interlocked.Increment(ref sequence),
-            secretValues);
+            secretValues,
+            request.SuppressOutputLogging);
         Task stderrTask = ReadLinesAsync(
             process.StandardError,
             ProcessOutputStream.StandardError,
             output,
             () => Interlocked.Increment(ref sequence),
-            secretValues);
+            secretValues,
+            request.SuppressOutputLogging);
         Task stdinTask = WriteStandardInputAsync(process, request.StandardInput);
         Task exitTask = process.WaitForExitAsync(CancellationToken.None);
 
@@ -187,12 +189,15 @@ public sealed class LocalProcessRunner(ILogger<LocalProcessRunner> logger) : IPr
         ProcessOutputStream stream,
         ConcurrentQueue<ProcessOutputLine> output,
         Func<long> nextSequence,
-        IReadOnlyCollection<string> secretValues)
+        IReadOnlyCollection<string> secretValues,
+        bool suppressLogging)
     {
         while (await reader.ReadLineAsync(CancellationToken.None).ConfigureAwait(false) is { } line)
         {
             var outputLine = new ProcessOutputLine(nextSequence(), stream, line, DateTimeOffset.UtcNow);
             output.Enqueue(outputLine);
+
+            if (suppressLogging) continue;
 
             string safeLine = RedactKnownValues(line, secretValues);
             if (stream == ProcessOutputStream.StandardOutput)

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 
 namespace KIScheduler.ProcessTestHelper;
 
@@ -60,6 +61,9 @@ internal static class Program
 
                 return 0;
 
+            case "fake-codex-app-server":
+                return await RunFakeCodexAppServerAsync();
+
             case "child":
                 await File.WriteAllTextAsync(args[1], Environment.ProcessId.ToString(
                     System.Globalization.CultureInfo.InvariantCulture));
@@ -69,6 +73,41 @@ internal static class Program
             default:
                 return 65;
         }
+    }
+
+    private static async Task<int> RunFakeCodexAppServerAsync()
+    {
+        bool initialized = false;
+        while (await Console.In.ReadLineAsync() is { } line)
+        {
+            using JsonDocument document = JsonDocument.Parse(line);
+            JsonElement root = document.RootElement;
+            string? method = root.GetProperty("method").GetString();
+            if (method == "initialized")
+            {
+                initialized = true;
+                continue;
+            }
+            if (!root.TryGetProperty("id", out JsonElement id)) continue;
+
+            if (method == "initialize")
+            {
+                Console.WriteLine($"{{\"id\":{id.GetRawText()},\"result\":{{\"userAgent\":\"fake\",\"future\":true}}}}");
+            }
+            else if (method == "account/rateLimits/read")
+            {
+                if (!initialized)
+                {
+                    Console.WriteLine($"{{\"id\":{id.GetRawText()},\"error\":{{\"code\":-32000,\"message\":\"Not initialized\"}}}}");
+                    await Console.Out.FlushAsync();
+                    continue;
+                }
+                Console.WriteLine($"{{\"id\":{id.GetRawText()},\"result\":{{\"rateLimitsByLimitId\":{{\"codex\":{{\"limitId\":\"codex\",\"limitName\":\"Codex\",\"primary\":{{\"usedPercent\":25,\"windowDurationMins\":300,\"resetsAt\":1893456000,\"future\":1}},\"secondary\":null,\"rateLimitReachedType\":null,\"unknown\":true}}}},\"futureTopLevel\":{{}}}}}}");
+                Console.WriteLine("{\"method\":\"account/rateLimits/updated\",\"params\":{\"rateLimits\":{\"limitId\":\"codex\",\"primary\":{\"usedPercent\":31,\"windowDurationMins\":300,\"resetsAt\":1893456000}}}}");
+            }
+            await Console.Out.FlushAsync();
+        }
+        return 0;
     }
 
     private static void WriteLines(TextWriter writer, string prefix, int count, string payload)

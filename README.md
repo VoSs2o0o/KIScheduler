@@ -1,6 +1,6 @@
 # KIScheduler
 
-KIScheduler wird eine lokale .NET-8-Windows-Forms-Anwendung zum Verwalten und Ausführen KI-generierter Arbeitspakete. Der aktuelle Stand enthält das technische Grundgerüst, das UI-unabhängige Domänenmodell, die lokale SQLite-Persistenz, einen sicheren lokalen Prozess-Runner, Projektroot-Auflösung und kontrollierte Projekterzeugung, getrennte Verträge und Registries für KI-Plattformen und Usage-Provider sowie den prioritäts-, projekt- und usage-gesteuerten Scheduler. Die konkreten CLI-Adapter folgen in den nächsten Arbeitspaketen.
+KIScheduler wird eine lokale .NET-8-Windows-Forms-Anwendung zum Verwalten und Ausführen KI-generierter Arbeitspakete. Der aktuelle Stand enthält das technische Grundgerüst, das UI-unabhängige Domänenmodell, die lokale SQLite-Persistenz, einen sicheren lokalen Prozess-Runner, Projektroot-Auflösung und kontrollierte Projekterzeugung, getrennte Verträge und Registries für KI-Plattformen und Usage-Provider sowie den prioritäts-, projekt- und usage-gesteuerten Scheduler. Codex-Aufträge werden nicht-interaktiv als JSONL ausgeführt; Rate-Limits stammen getrennt davon aus dem dokumentierten Codex App Server.
 
 ## Voraussetzungen
 
@@ -32,3 +32,9 @@ Nicht geheime Einstellungen liegen in `src/KIScheduler.WinForms/appsettings.json
 - `KIScheduler.Tests`: automatisierte Tests
 
 Der Leitfaden [docs/PLATFORM_ADAPTERS.md](docs/PLATFORM_ADAPTERS.md) beschreibt, wie ein weiterer Plattform- und Usage-Adapter ergänzt wird.
+
+## Codex-Integration
+
+Die installierte Codex CLI wird über `codex exec - --json` verwendet. Prompt, Modell und Reasoning-Effort werden pro Auftrag fest übergeben. Für Usage hält `CodexUsageProvider` eine wiederverwendbare stdio-Verbindung zu `codex app-server`, liest `account/rateLimits/read` und verarbeitet `account/rateLimits/updated`. `account/usage/read` wird nicht zur Startfreigabe verwendet.
+
+Executable, Sandbox, Timeouts, Cache-Dauer und App-Server-Argumente sind im Abschnitt `Codex` der `appsettings.json` konfigurierbar. Authentifizierungs-, Verbindungs- und Protokollfehler führen zu explizit unbekannter Usage; es gibt keinen Rückfall auf private HTTP-Endpunkte.

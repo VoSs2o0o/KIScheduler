@@ -1,4 +1,6 @@
 using KIScheduler.Core.Contracts;
+using KIScheduler.Platforms.Codex;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace KIScheduler.Platforms;
@@ -29,6 +31,18 @@ public static class PlatformServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         services.AddSingleton<TProvider>();
         services.AddSingleton<IUsageProvider>(provider => provider.GetRequiredService<TProvider>());
+        return services;
+    }
+
+    public static IServiceCollection AddCodexPlatform(this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(configuration);
+        services.Configure<CodexOptions>(configuration.GetSection(CodexOptions.SectionName));
+        services.AddSingleton<ICodexAppServerClient, CodexAppServerClient>();
+        services.AddAiPlatform<CodexPlatform>();
+        services.AddUsageProvider<CodexUsageProvider>();
         return services;
     }
 }

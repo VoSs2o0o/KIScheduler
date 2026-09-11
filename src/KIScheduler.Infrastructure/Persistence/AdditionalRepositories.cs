@@ -16,7 +16,8 @@ public sealed class SqliteUsageSnapshotRepository(IDbContextFactory<KischedulerD
         return new UsageSnapshot(new(row.PlatformId), row.ReadAtUtc, row.Source, (UsageQuality)row.Quality,
             windows.Select(x => new UsageWindow(x.Name, new(x.UsedPercent), x.ResetAtUtc, x.Source, x.ReadAtUtc,
                 (UsageQuality)x.Quality, x.RateLimitReachedType,
-                x.WindowDurationTicks.HasValue ? TimeSpan.FromTicks(x.WindowDurationTicks.Value) : null)));
+                x.WindowDurationTicks.HasValue ? TimeSpan.FromTicks(x.WindowDurationTicks.Value) : null,
+                x.LimitId, x.LimitName)));
     }
 
     public async Task SaveAsync(UsageSnapshot snapshot, CancellationToken cancellationToken = default)
@@ -38,6 +39,8 @@ public sealed class SqliteUsageSnapshotRepository(IDbContextFactory<KischedulerD
             Id = Guid.NewGuid(),
             SnapshotId = id,
             Name = x.Name,
+            LimitId = x.LimitId,
+            LimitName = x.LimitName,
             UsedPercent = x.UsedPercent.Value,
             ResetAtUtc = x.ResetAtUtc,
             Source = x.Source,

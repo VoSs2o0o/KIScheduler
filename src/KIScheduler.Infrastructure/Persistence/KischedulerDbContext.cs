@@ -79,6 +79,8 @@ public sealed class KischedulerDbContext(DbContextOptions<KischedulerDbContext> 
         {
             entity.ToTable("UsageWindows"); entity.HasKey(x => x.Id);
             entity.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            entity.Property(x => x.LimitId).HasMaxLength(200);
+            entity.Property(x => x.LimitName).HasMaxLength(300);
             entity.Property(x => x.Source).HasMaxLength(500).IsRequired();
             entity.HasIndex(x => new { x.SnapshotId, x.Name }).IsUnique();
             entity.HasOne<UsageSnapshotRow>().WithMany().HasForeignKey(x => x.SnapshotId).OnDelete(DeleteBehavior.Cascade);
@@ -196,6 +198,8 @@ public sealed class UsageWindowRow
     public Guid Id { get; set; }
     public Guid SnapshotId { get; set; }
     public string Name { get; set; } = "";
+    public string? LimitId { get; set; }
+    public string? LimitName { get; set; }
     public decimal UsedPercent { get; set; }
     public DateTimeOffset? ResetAtUtc { get; set; }
     public string Source { get; set; } = "";

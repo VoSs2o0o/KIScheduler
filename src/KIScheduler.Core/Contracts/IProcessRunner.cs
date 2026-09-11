@@ -37,6 +37,12 @@ public sealed record class ProcessRunRequest
         = Array.Empty<string>();
 
     public TimeSpan? Timeout { get; init; }
+
+    /// <summary>
+    /// Captures output in the result but prevents raw stdout/stderr lines from being written to logs.
+    /// Use this for tools whose structured output can contain credentials or sensitive source data.
+    /// </summary>
+    public bool SuppressOutputLogging { get; init; }
 }
 
 public enum ProcessTerminationReason

@@ -78,7 +78,7 @@ public sealed record UsageWindow
 {
     public UsageWindow(string name, UsagePercent usedPercent, DateTimeOffset? resetAtUtc,
         string source, DateTimeOffset readAtUtc, UsageQuality quality, string? rateLimitReachedType = null,
-        TimeSpan? windowDuration = null)
+        TimeSpan? windowDuration = null, string? limitId = null, string? limitName = null)
     {
         Name = DomainValidation.Required(name, nameof(name));
         UsedPercent = usedPercent;
@@ -93,6 +93,8 @@ public sealed record UsageWindow
         Quality = quality;
         RateLimitReachedType = string.IsNullOrWhiteSpace(rateLimitReachedType) ? null : rateLimitReachedType.Trim();
         WindowDuration = windowDuration;
+        LimitId = string.IsNullOrWhiteSpace(limitId) ? null : limitId.Trim();
+        LimitName = string.IsNullOrWhiteSpace(limitName) ? null : limitName.Trim();
     }
 
     public string Name { get; }
@@ -103,6 +105,8 @@ public sealed record UsageWindow
     public UsageQuality Quality { get; }
     public string? RateLimitReachedType { get; }
     public TimeSpan? WindowDuration { get; }
+    public string? LimitId { get; }
+    public string? LimitName { get; }
     public bool IsServerLimitReached => RateLimitReachedType is not null;
 }
 

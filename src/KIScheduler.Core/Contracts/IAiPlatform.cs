@@ -75,16 +75,33 @@ public enum PlatformExecutionOutcome
     UsageExceeded
 }
 
+public enum PlatformFailureKind
+{
+    None,
+    Authentication,
+    Network,
+    Parse,
+    Quota,
+    ProcessStart,
+    Unknown
+}
+
+public sealed record PlatformExecutionEvent(string Type, string Json);
+
 public sealed record PlatformExecutionResult
 {
     public PlatformExecutionResult(PlatformExecutionOutcome outcome, int? exitCode = null,
-        string? sessionId = null, string? message = null, bool mayHavePartialChanges = false)
+        string? sessionId = null, string? message = null, bool mayHavePartialChanges = false,
+        PlatformFailureKind failureKind = PlatformFailureKind.None,
+        IEnumerable<PlatformExecutionEvent>? events = null)
     {
         Outcome = outcome;
         ExitCode = exitCode;
         SessionId = string.IsNullOrWhiteSpace(sessionId) ? null : sessionId.Trim();
         Message = string.IsNullOrWhiteSpace(message) ? null : message.Trim();
         MayHavePartialChanges = mayHavePartialChanges;
+        FailureKind = failureKind;
+        Events = new ReadOnlyCollection<PlatformExecutionEvent>((events ?? []).ToList());
     }
 
     public PlatformExecutionOutcome Outcome { get; }
@@ -92,5 +109,7 @@ public sealed record PlatformExecutionResult
     public string? SessionId { get; }
     public string? Message { get; }
     public bool MayHavePartialChanges { get; }
+    public PlatformFailureKind FailureKind { get; }
+    public IReadOnlyList<PlatformExecutionEvent> Events { get; }
     public bool Succeeded => Outcome == PlatformExecutionOutcome.Succeeded;
 }
