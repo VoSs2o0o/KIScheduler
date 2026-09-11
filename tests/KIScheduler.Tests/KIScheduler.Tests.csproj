@@ -15,5 +15,6 @@
     <ProjectReference Include="..\..\src\KIScheduler.Core\KIScheduler.Core.csproj" />
     <ProjectReference Include="..\..\src\KIScheduler.Infrastructure\KIScheduler.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\KIScheduler.Platforms\KIScheduler.Platforms.csproj" />
+    <ProjectReference Include="..\KIScheduler.ProcessTestHelper\KIScheduler.ProcessTestHelper.csproj" />
   </ItemGroup>
 </Project>
