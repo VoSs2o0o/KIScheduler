@@ -4,7 +4,7 @@ public sealed class WorkItem
 {
     public WorkItem(WorkItemId id, string title, WorkItemPriority priority, PlatformId platformId,
         ModelId modelId, EffortLevel effort, PromptPath promptPath, bool autoCommit,
-        DateTimeOffset createdAtUtc, ProjectId? projectId = null)
+        DateTimeOffset createdAtUtc, ProjectId? projectId = null, string? commitMessage = null)
     {
         DomainValidation.Id(id.Value, nameof(id));
         Id = id;
@@ -15,6 +15,7 @@ public sealed class WorkItem
         Effort = effort ?? throw new ArgumentNullException(nameof(effort));
         PromptPath = promptPath ?? throw new ArgumentNullException(nameof(promptPath));
         AutoCommit = autoCommit;
+        CommitMessage = NormalizeCommitMessage(commitMessage);
         CreatedAtUtc = DomainValidation.Utc(createdAtUtc, nameof(createdAtUtc));
         ProjectId = projectId;
         Status = WorkItemStatus.Entwurf;
@@ -28,6 +29,7 @@ public sealed class WorkItem
     public EffortLevel Effort { get; private set; }
     public PromptPath PromptPath { get; private set; }
     public bool AutoCommit { get; private set; }
+    public string? CommitMessage { get; private set; }
     public ProjectId? ProjectId { get; private set; }
     public DateTimeOffset CreatedAtUtc { get; }
     public DateTimeOffset? FirstAttemptStartedAtUtc { get; private set; }
@@ -38,7 +40,8 @@ public sealed class WorkItem
     public static WorkItem Rehydrate(WorkItemId id, string title, WorkItemPriority priority,
         PlatformId platformId, ModelId modelId, EffortLevel effort, PromptPath promptPath,
         bool autoCommit, DateTimeOffset createdAtUtc, ProjectId? projectId, WorkItemStatus status,
-        DateTimeOffset? firstAttemptStartedAtUtc, bool hasExecutionStarted, int normalRetryCount)
+        DateTimeOffset? firstAttemptStartedAtUtc, bool hasExecutionStarted, int normalRetryCount,
+        string? commitMessage = null)
     {
         if (firstAttemptStartedAtUtc.HasValue)
         {
@@ -51,7 +54,7 @@ public sealed class WorkItem
         }
 
         var item = new WorkItem(id, title, priority, platformId, modelId, effort, promptPath,
-            autoCommit, createdAtUtc, projectId)
+            autoCommit, createdAtUtc, projectId, commitMessage)
         {
             Status = status,
             FirstAttemptStartedAtUtc = firstAttemptStartedAtUtc,
@@ -131,6 +134,30 @@ public sealed class WorkItem
         PromptPath = promptPath ?? throw new ArgumentNullException(nameof(promptPath));
         AutoCommit = autoCommit;
         ProjectId = projectId;
+    }
+
+    public void ChangeCommitMessage(string? commitMessage) =>
+        CommitMessage = NormalizeCommitMessage(commitMessage);
+
+    public string ResolveCommitMessage()
+    {
+        if (CommitMessage is not null) return CommitMessage;
+
+        string fileName = Path.GetFileNameWithoutExtension(PromptPath.Value);
+        string[] parts = fileName.Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        string? apName = parts.FirstOrDefault(part =>
+            part.Length > 2 && part.StartsWith("AP", StringComparison.OrdinalIgnoreCase)
+            && part[2..].All(char.IsDigit));
+        return apName is null ? Title : $"{apName.ToUpperInvariant()}: {Title}";
+    }
+
+    private static string? NormalizeCommitMessage(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        value = value.Trim();
+        if (value.Length > 1000)
+            throw new ArgumentException("Die Commitnachricht darf höchstens 1000 Zeichen enthalten.", nameof(value));
+        return value;
     }
 
     public WorkItemDisplayStatus GetDisplayStatus(bool projectHasExecutionHold)

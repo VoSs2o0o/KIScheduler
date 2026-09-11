@@ -4,7 +4,7 @@ namespace KIScheduler.Core.Domain;
 
 public sealed class ProjectDefinition
 {
-    public ProjectDefinition(ProjectId id, string name, string rootPath, string targetBranch,
+    public ProjectDefinition(ProjectId id, string name, string rootPath, string targetBranch = "master",
         IEnumerable<ValidationCommand>? validationCommands = null, string defaultTemplate = "classlib")
     {
         DomainValidation.Id(id.Value, nameof(id));

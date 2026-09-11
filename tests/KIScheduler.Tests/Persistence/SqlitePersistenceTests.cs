@@ -41,6 +41,7 @@ public sealed class SqlitePersistenceTests
         var workItems = new SqliteWorkItemRepository(factory!);
         var history = new SqliteExecutionHistoryRepository(factory!);
         var item = CreateQueuedWorkItem();
+        item.ChangeCommitMessage("AP9: persistierte Nachricht");
         await workItems.SaveAsync(item);
         var now = DateTimeOffset.UtcNow;
         var attempt = new ExecutionAttempt(ExecutionAttemptId.New(), item.Id, 1, item.PlatformId, item.ModelId,
@@ -62,6 +63,7 @@ public sealed class SqlitePersistenceTests
 
         Assert.IsNotNull(restored);
         Assert.AreEqual(WorkItemStatus.InWarteschlange, restored.Status);
+        Assert.AreEqual("AP9: persistierte Nachricht", restored.CommitMessage);
         Assert.AreEqual(2, attempts.Count);
         Assert.AreEqual("session-1", attempts[0].SessionId);
         Assert.AreEqual(2, events.Count);

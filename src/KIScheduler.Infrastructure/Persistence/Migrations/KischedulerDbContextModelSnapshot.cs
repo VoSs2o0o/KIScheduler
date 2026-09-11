@@ -449,6 +449,10 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                     b.Property<bool>("AutoCommit")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("CommitMessage")
+                        .HasMaxLength(1000)
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("TEXT");
 

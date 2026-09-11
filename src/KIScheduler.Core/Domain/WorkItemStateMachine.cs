@@ -9,7 +9,7 @@ public static class WorkItemStateMachine
             {
                 [WorkItemStatus.Entwurf] = Set(WorkItemStatus.InWarteschlange, WorkItemStatus.Pausiert, WorkItemStatus.Abgebrochen),
                 [WorkItemStatus.InWarteschlange] = Set(WorkItemStatus.Reserviert, WorkItemStatus.WartetAufUsage, WorkItemStatus.ProjektFehlt, WorkItemStatus.Pausiert, WorkItemStatus.Abgebrochen),
-                [WorkItemStatus.Reserviert] = Set(WorkItemStatus.InBearbeitung, WorkItemStatus.InWarteschlange, WorkItemStatus.WartetAufUsage, WorkItemStatus.ProjektFehlt, WorkItemStatus.Pausiert, WorkItemStatus.Abgebrochen, WorkItemStatus.Unterbrochen),
+                [WorkItemStatus.Reserviert] = Set(WorkItemStatus.InBearbeitung, WorkItemStatus.InWarteschlange, WorkItemStatus.WartetAufUsage, WorkItemStatus.ProjektFehlt, WorkItemStatus.Pausiert, WorkItemStatus.MenschlichePruefung, WorkItemStatus.Abgebrochen, WorkItemStatus.Unterbrochen),
                 [WorkItemStatus.InBearbeitung] = Set(WorkItemStatus.WartetAufUsage, WorkItemStatus.MenschlichePruefung, WorkItemStatus.TechnischErfolgreich, WorkItemStatus.ErfolgreichMitWarnung, WorkItemStatus.Fehlgeschlagen, WorkItemStatus.Abgebrochen, WorkItemStatus.Unterbrochen),
                 [WorkItemStatus.WartetAufUsage] = Set(WorkItemStatus.Reserviert, WorkItemStatus.InWarteschlange, WorkItemStatus.ProjektFehlt, WorkItemStatus.Pausiert, WorkItemStatus.MenschlichePruefung, WorkItemStatus.Abgebrochen),
                 [WorkItemStatus.ProjektFehlt] = Set(WorkItemStatus.InWarteschlange, WorkItemStatus.Entwurf, WorkItemStatus.Pausiert, WorkItemStatus.Abgebrochen),

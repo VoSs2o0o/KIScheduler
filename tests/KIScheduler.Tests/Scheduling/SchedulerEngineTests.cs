@@ -178,6 +178,67 @@ public sealed class SchedulerEngineTests
         Assert.AreEqual(WorkItemStatus.Unterbrochen, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
     }
 
+    [TestMethod]
+    public async Task AutoCommitPreflightFailureDoesNotStartPlatform()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("wrong-branch"), 50);
+        fixture.Git.NextInspection = new GitInspectionResult(GitInspectionStatus.BranchMismatch,
+            "Falscher Branch.", new GitWorkingTreeSnapshot("repo", "develop", Array.Empty<string>()));
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        Assert.AreEqual(0, fixture.Platform("codex").Requests.Count);
+        Assert.AreEqual(WorkItemStatus.MenschlichePruefung, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+        Assert.IsTrue((await fixture.History.ListEventsAsync(item.Id)).Any(e => e.EventType == "git.before"));
+    }
+
+    [TestMethod]
+    public async Task SuccessfulPlatformWithoutGitChangesEndsWithWarning()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("no-changes"), 50);
+        fixture.Git.NextCommitStatus = GitCommitStatus.NoChanges;
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        Assert.AreEqual(WorkItemStatus.ErfolgreichMitWarnung, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+        Assert.AreEqual(1, fixture.Git.CommitRequests.Count);
+    }
+
+    [TestMethod]
+    public async Task DisabledAutoCommitInspectsButNeverStagesOrCommits()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("no-commit"), 50,
+            autoCommit: false);
+        fixture.Git.NextInspection = new GitInspectionResult(GitInspectionStatus.WorkingTreeDirty,
+            "Vorhandene Änderungen.", new GitWorkingTreeSnapshot("repo", "master", [" M user.txt"]));
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        Assert.AreEqual(WorkItemStatus.TechnischErfolgreich, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+        Assert.AreEqual(0, fixture.Git.CommitRequests.Count);
+        Assert.AreEqual(2, fixture.Git.InspectionRequests.Count);
+    }
+
+    [TestMethod]
+    public async Task FailedRequiredCommitMovesWorkItemToHumanReview()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("commit-fails"), 50);
+        fixture.Git.NextCommitStatus = GitCommitStatus.Failed;
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        Assert.AreEqual(WorkItemStatus.MenschlichePruefung, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+        Assert.AreEqual(1, fixture.Git.CommitRequests.Count);
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -197,7 +258,7 @@ public sealed class SchedulerEngineTests
             Dictionary<string, FakeAiPlatform> platformMap,
             Dictionary<string, FakeUsageProvider> usageMap,
             IDbContextFactory<KischedulerDbContext> contextFactory,
-            SchedulerEngine engine, FakeClock clock)
+            SchedulerEngine engine, FakeClock clock, FakeGitService git)
         {
             this.databasePath = databasePath;
             this.directory = directory;
@@ -206,6 +267,7 @@ public sealed class SchedulerEngineTests
             this.contextFactory = contextFactory;
             Engine = engine;
             Clock = clock;
+            Git = git;
             WorkItems = new(contextFactory);
             Blocks = new(contextFactory);
             History = new(contextFactory);
@@ -213,6 +275,7 @@ public sealed class SchedulerEngineTests
 
         public SchedulerEngine Engine { get; }
         public FakeClock Clock { get; }
+        public FakeGitService Git { get; }
         public SqliteWorkItemRepository WorkItems { get; }
         public SqliteExecutionBlockRepository Blocks { get; }
         public SqliteExecutionHistoryRepository History { get; }
@@ -252,12 +315,13 @@ public sealed class SchedulerEngineTests
             var atomic = new SqliteAtomicExecutionRepository(factory);
             var aiRegistry = new AiPlatformRegistry(platformMap.Values);
             var usageRegistry = new UsageProviderRegistry(usageMap.Values);
+            var git = new FakeGitService();
             var engine = new SchedulerEngine(workItems, projects, platformRepository,
                 new SqliteUsagePolicyRepository(factory), snapshots, history, blocks, atomic,
                 aiRegistry, usageRegistry, new PlatformConfigurationValidator(aiRegistry, usageRegistry),
-                new PhysicalFileSystem(), clock, new SchedulerOptions { AgingInterval = TimeSpan.FromMinutes(1) },
+                new PhysicalFileSystem(), git, clock, new SchedulerOptions { AgingInterval = TimeSpan.FromMinutes(1) },
                 ownerId: "test-worker");
-            return new SchedulerFixture(databasePath, directory, platformMap, usageMap, factory, engine, clock);
+            return new SchedulerFixture(databasePath, directory, platformMap, usageMap, factory, engine, clock, git);
         }
 
         public FakeAiPlatform Platform(string id) => platformMap[id];
@@ -279,12 +343,13 @@ public sealed class SchedulerEngineTests
 
         public string ProjectRoot(ProjectId id) => projectRoots[id];
 
-        public async Task<WorkItem> AddWorkItemAsync(string platformId, ProjectId projectId, int priority)
+        public async Task<WorkItem> AddWorkItemAsync(string platformId, ProjectId projectId, int priority,
+            bool autoCommit = true)
         {
             var prompt = Path.Combine(projectRoots[projectId], "docs", $"{Guid.NewGuid():N}.md");
             await File.WriteAllTextAsync(prompt, "Implementiere das Arbeitspaket.");
             var item = new WorkItem(WorkItemId.New(), prompt, new(priority), new(platformId), new("gpt"),
-                new("medium"), new(prompt), true, Clock.UtcNow, projectId);
+                new("medium"), new(prompt), autoCommit, Clock.UtcNow, projectId);
             item.TransitionTo(WorkItemStatus.InWarteschlange);
             await WorkItems.SaveAsync(item);
             return item;
@@ -306,6 +371,35 @@ public sealed class SchedulerEngineTests
     {
         public DateTimeOffset UtcNow { get; private set; } = utcNow;
         public void Advance(TimeSpan duration) => UtcNow += duration;
+    }
+
+    private sealed class FakeGitService : IGitService
+    {
+        public GitInspectionResult? NextInspection { get; set; }
+        public GitCommitStatus NextCommitStatus { get; set; } = GitCommitStatus.Committed;
+        public List<GitInspectionRequest> InspectionRequests { get; } = [];
+        public List<GitCommitRequest> CommitRequests { get; } = [];
+
+        public Task<GitInspectionResult> InspectAsync(GitInspectionRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            InspectionRequests.Add(request);
+            var snapshot = new GitWorkingTreeSnapshot(request.ProjectRoot, request.TargetBranch, Array.Empty<string>());
+            return Task.FromResult(NextInspection
+                ?? new GitInspectionResult(GitInspectionStatus.Ready, "bereit", snapshot));
+        }
+
+        public Task<GitCommitResult> CommitAllAsync(GitCommitRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            CommitRequests.Add(request);
+            var before = new GitWorkingTreeSnapshot(request.ProjectRoot, request.TargetBranch,
+                NextCommitStatus == GitCommitStatus.NoChanges ? Array.Empty<string>() : [" M generated.txt"]);
+            var after = new GitWorkingTreeSnapshot(request.ProjectRoot, request.TargetBranch, Array.Empty<string>());
+            return Task.FromResult(new GitCommitResult(NextCommitStatus,
+                NextCommitStatus == GitCommitStatus.NoChanges ? "keine Änderungen" : "committed", before, after,
+                NextCommitStatus == GitCommitStatus.Committed ? "abc123" : null));
+        }
     }
 
     private sealed class TestContextFactory(DbContextOptions<KischedulerDbContext> options)

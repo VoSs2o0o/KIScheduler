@@ -28,6 +28,7 @@ public sealed class KischedulerDbContext(DbContextOptions<KischedulerDbContext> 
             entity.Property(x => x.ModelId).HasMaxLength(100).IsRequired();
             entity.Property(x => x.Effort).HasMaxLength(50).IsRequired();
             entity.Property(x => x.PromptPath).HasMaxLength(2048).IsRequired();
+            entity.Property(x => x.CommitMessage).HasMaxLength(1000);
             entity.HasIndex(x => new { x.Status, x.Priority, x.CreatedAtUtc });
             entity.ToTable(table =>
             {
@@ -142,6 +143,7 @@ public sealed class WorkItemRow
     public string Effort { get; set; } = "";
     public string PromptPath { get; set; } = "";
     public bool AutoCommit { get; set; }
+    public string? CommitMessage { get; set; }
     public Guid? ProjectId { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset? FirstAttemptStartedAtUtc { get; set; }

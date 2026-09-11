@@ -6,6 +6,27 @@ namespace KIScheduler.Tests.Domain;
 [TestClass]
 public sealed class WorkItemTests
 {
+    [TestMethod]
+    public void CommitMessageCanBeDerivedFromApFileAndOverridden()
+    {
+        var item = new WorkItem(WorkItemId.New(), "Git-Prüfung und Auto-Commit", new(50), new("codex"),
+            new("gpt"), new("high"), new(Path.Combine("docs", "009_AP9.md")), true,
+            DateTimeOffset.UtcNow);
+
+        Assert.AreEqual("AP9: Git-Prüfung und Auto-Commit", item.ResolveCommitMessage());
+        item.ChangeCommitMessage("Eigene Commitnachricht");
+        Assert.AreEqual("Eigene Commitnachricht", item.ResolveCommitMessage());
+        item.ChangeCommitMessage("  ");
+        Assert.AreEqual("AP9: Git-Prüfung und Auto-Commit", item.ResolveCommitMessage());
+    }
+
+    [TestMethod]
+    public void ProjectTargetBranchDefaultsToMaster()
+    {
+        var project = new ProjectDefinition(ProjectId.New(), "Test", Path.GetTempPath());
+
+        Assert.AreEqual("master", project.TargetBranch);
+    }
     private static readonly DateTimeOffset Now = new(2026, 9, 11, 10, 0, 0, TimeSpan.Zero);
 
     [TestMethod]

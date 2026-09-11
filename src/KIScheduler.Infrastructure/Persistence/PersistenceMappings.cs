@@ -17,6 +17,7 @@ internal static class PersistenceMappings
         Effort = value.Effort.Value,
         PromptPath = value.PromptPath.Value,
         AutoCommit = value.AutoCommit,
+        CommitMessage = value.CommitMessage,
         ProjectId = value.ProjectId?.Value,
         CreatedAtUtc = value.CreatedAtUtc,
         FirstAttemptStartedAtUtc = value.FirstAttemptStartedAtUtc,
@@ -30,7 +31,7 @@ internal static class PersistenceMappings
         new(value.Effort), new(value.PromptPath), value.AutoCommit, value.CreatedAtUtc,
         value.ProjectId.HasValue ? new ProjectId(value.ProjectId.Value) : null,
         (WorkItemStatus)value.Status, value.FirstAttemptStartedAtUtc, value.HasExecutionStarted,
-        value.NormalRetryCount);
+        value.NormalRetryCount, value.CommitMessage);
 
     public static ExecutionAttemptRow ToRow(ExecutionAttempt value) => new()
     {

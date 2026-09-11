@@ -36,6 +36,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
     private readonly IUsageProviderRegistry usageProviders;
     private readonly IPlatformConfigurationValidator configurationValidator;
     private readonly IFileSystem fileSystem;
+    private readonly IGitService git;
     private readonly IClock clock;
     private readonly SchedulerOptions options;
     private readonly UsagePolicyEvaluator usageEvaluator;
@@ -55,7 +56,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
         IExecutionBlockRepository blocks, IAtomicExecutionRepository atomicExecution,
         IAiPlatformRegistry platforms, IUsageProviderRegistry usageProviders,
         IPlatformConfigurationValidator configurationValidator, IFileSystem fileSystem,
-        IClock clock, SchedulerOptions options, UsagePolicyEvaluator? usageEvaluator = null,
+        IGitService git, IClock clock, SchedulerOptions options, UsagePolicyEvaluator? usageEvaluator = null,
         SchedulerPriorityCalculator? priorityCalculator = null, string? ownerId = null)
     {
         this.workItems = workItems ?? throw new ArgumentNullException(nameof(workItems));
@@ -70,6 +71,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
         this.usageProviders = usageProviders ?? throw new ArgumentNullException(nameof(usageProviders));
         this.configurationValidator = configurationValidator ?? throw new ArgumentNullException(nameof(configurationValidator));
         this.fileSystem = fileSystem ?? throw new ArgumentNullException(nameof(fileSystem));
+        this.git = git ?? throw new ArgumentNullException(nameof(git));
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
         this.options = options ?? throw new ArgumentNullException(nameof(options));
         options.Validate();
@@ -318,6 +320,17 @@ public sealed class SchedulerEngine : ISchedulerEngine
                 return;
             }
 
+            GitInspectionResult gitBefore = await git.InspectAsync(new GitInspectionRequest(
+                project.RootPath, project.TargetBranch, RequireCleanWorkingTree: item.AutoCommit), cancellationToken)
+                .ConfigureAwait(false);
+            await RecordGitStatusAsync(item, "git.before", gitBefore, CancellationToken.None).ConfigureAwait(false);
+            if (item.AutoCommit && !gitBefore.IsReady)
+            {
+                item.TransitionTo(WorkItemStatus.MenschlichePruefung);
+                await workItems.SaveAsync(item, CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+
             var definition = await platformDefinitions.GetAsync(item.PlatformId, cancellationToken).ConfigureAwait(false)
                 ?? throw new PlatformConfigurationException($"Plattform '{item.PlatformId.Value}' ist nicht konfiguriert.");
             var adapter = platforms.GetRequired(item.PlatformId);
@@ -355,12 +368,36 @@ public sealed class SchedulerEngine : ISchedulerEngine
                     message: exception.Message, mayHavePartialChanges: true);
             }
 
+            if (!item.AutoCommit || result.Outcome != PlatformExecutionOutcome.Succeeded)
+            {
+                GitInspectionResult gitAfter = await git.InspectAsync(new GitInspectionRequest(
+                    project.RootPath, project.TargetBranch, RequireCleanWorkingTree: false), CancellationToken.None)
+                    .ConfigureAwait(false);
+                await RecordGitStatusAsync(item, "git.after", gitAfter, CancellationToken.None).ConfigureAwait(false);
+            }
+
             var completedAt = clock.UtcNow;
             var attemptResult = MapResult(result, shutdown.IsCancellationRequested);
+            string? diagnostic = result.Message;
+            GitCommitResult? commitResult = null;
+            if (attemptResult == ExecutionAttemptResult.TechnischErfolgreich && item.AutoCommit)
+            {
+                commitResult = await git.CommitAllAsync(new GitCommitRequest(
+                    project.RootPath, project.TargetBranch, item.ResolveCommitMessage()), CancellationToken.None)
+                    .ConfigureAwait(false);
+                await RecordGitCommitAsync(item, commitResult, CancellationToken.None).ConfigureAwait(false);
+                diagnostic = commitResult.Message;
+                attemptResult = commitResult.Status switch
+                {
+                    GitCommitStatus.Committed => ExecutionAttemptResult.TechnischErfolgreich,
+                    GitCommitStatus.NoChanges => ExecutionAttemptResult.ErfolgreichMitWarnung,
+                    _ => ExecutionAttemptResult.MenschlichePruefung
+                };
+            }
             var sequence = (await history.ListAttemptsAsync(item.Id, CancellationToken.None).ConfigureAwait(false)).Count + 1;
             attempt = new ExecutionAttempt(ExecutionAttemptId.New(), item.Id, sequence, item.PlatformId,
                 item.ModelId, item.Effort, startedAt, completedAt, attemptResult, result.ExitCode,
-                result.SessionId ?? resumeSessionId, result.Message);
+                result.SessionId ?? resumeSessionId, diagnostic);
             item.CompleteCurrentAttempt(attemptResult);
 
             if (attemptResult == ExecutionAttemptResult.UsageExceeded)
@@ -374,7 +411,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
             await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, completedAt,
                 attemptResult is ExecutionAttemptResult.TechnischErfolgreich or ExecutionAttemptResult.ErfolgreichMitWarnung
                     ? ExecutionEventSeverity.Information : ExecutionEventSeverity.Error,
-                "execution.completed", result.Message ?? attemptResult.ToString(), attempt.Id,
+                "execution.completed", diagnostic ?? attemptResult.ToString(), attempt.Id,
                 new Dictionary<string, string>
                 {
                     ["reasonCode"] = $"execution.{attemptResult.ToString().ToLowerInvariant()}",
@@ -464,6 +501,48 @@ public sealed class SchedulerEngine : ISchedulerEngine
         history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
             ExecutionEventSeverity.Information, "scheduler.decision", reasonCode, data:
             new Dictionary<string, string> { ["reasonCode"] = reasonCode }), cancellationToken);
+
+    private Task RecordGitStatusAsync(WorkItem item, string eventType, GitInspectionResult result,
+        CancellationToken cancellationToken)
+    {
+        var data = new Dictionary<string, string>
+        {
+            ["reasonCode"] = $"git.{result.Status.ToString().ToLowerInvariant()}",
+            ["status"] = result.Status.ToString(),
+            ["autoCommit"] = item.AutoCommit.ToString()
+        };
+        if (result.Snapshot is { } snapshot)
+        {
+            data["repositoryRoot"] = snapshot.RepositoryRoot;
+            data["branch"] = snapshot.CurrentBranch ?? "";
+            data["isClean"] = snapshot.IsClean.ToString();
+            data["changeCount"] = snapshot.StatusLines.Count.ToString();
+        }
+        return history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+            result.IsReady ? ExecutionEventSeverity.Information :
+                item.AutoCommit ? ExecutionEventSeverity.Error : ExecutionEventSeverity.Warning,
+            eventType, result.Message, data: data), cancellationToken);
+    }
+
+    private Task RecordGitCommitAsync(WorkItem item, GitCommitResult result,
+        CancellationToken cancellationToken)
+    {
+        var data = new Dictionary<string, string>
+        {
+            ["reasonCode"] = $"git.{result.Status.ToString().ToLowerInvariant()}",
+            ["status"] = result.Status.ToString(),
+            ["beforeChangeCount"] = result.Before.StatusLines.Count.ToString(),
+            ["afterChangeCount"] = result.After?.StatusLines.Count.ToString() ?? "unknown"
+        };
+        if (result.CommitId is not null) data["commitId"] = result.CommitId;
+        return history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+            result.Status switch
+            {
+                GitCommitStatus.Committed => ExecutionEventSeverity.Information,
+                GitCommitStatus.NoChanges => ExecutionEventSeverity.Warning,
+                _ => ExecutionEventSeverity.Error
+            }, "git.after", result.Message, data: data), cancellationToken);
+    }
 
     private void ReserveRunning(WorkItem item)
     {

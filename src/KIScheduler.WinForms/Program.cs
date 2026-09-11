@@ -1,4 +1,5 @@
 using KIScheduler.Infrastructure.Logging;
+using KIScheduler.Infrastructure.Git;
 using KIScheduler.Infrastructure.Persistence;
 using KIScheduler.Infrastructure.Processes;
 using KIScheduler.Infrastructure.Projects;
@@ -52,6 +53,7 @@ internal static class Program
                     context.Configuration,
                     context.HostingEnvironment.ContentRootPath);
                 services.AddKischedulerProcessRunner();
+                services.AddKischedulerGit();
                 services.AddKischedulerProjectServices();
                 services.AddKischedulerPlatformServices();
                 services.AddCodexPlatform(context.Configuration);
