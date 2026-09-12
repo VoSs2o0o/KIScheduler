@@ -10,40 +10,103 @@ internal sealed class WorkItemDialog : Form
     private readonly ComboBox platform = Combo();
     private readonly ComboBox model = Combo();
     private readonly ComboBox effort = Combo();
-    private readonly TextBox prompt = new() { Width = 460 };
+    private readonly ComboBox project = Combo();
+    private readonly TextBox prompt = new() { Dock = DockStyle.Fill, ReadOnly = true };
     private readonly CheckBox autoCommit = new() { Text = "Nach Erfolg automatisch committen", AutoSize = true };
     private readonly TextBox commitMessage = new();
 
     public WorkItemDialog(IReadOnlyList<PlatformDefinition> platforms, WorkItem? item,
-        IReadOnlyDictionary<ProjectId, ProjectDefinition> projects)
+        IReadOnlyDictionary<ProjectId, ProjectDefinition> projects, bool duplicate = false)
     {
         this.platforms = platforms;
-        Text = item is null ? "Auftrag anlegen" : "Auftrag bearbeiten";
-        Width = 700; Height = 365; StartPosition = FormStartPosition.CenterParent;
+        var readOnly = item is not null && !duplicate && !item.CanEdit;
+        Text = readOnly ? "Auftrag anzeigen" : duplicate ? "Auftrag duplizieren"
+            : item is null ? "Auftrag anlegen" : "Auftrag bearbeiten";
+        Width = 740; Height = 420; StartPosition = FormStartPosition.CenterParent;
         var form = CreateLayout();
         AddRow(form, "Titel", title); AddRow(form, "Priorität", priority); AddRow(form, "Plattform", platform);
         AddRow(form, "Modell", model); AddRow(form, "Effort", effort);
-        var promptPanel = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false };
-        promptPanel.Controls.Add(prompt); var choose = new Button { Text = "Datei wählen …", AutoSize = true };
-        choose.Click += (_, _) => { using var dialog = new OpenFileDialog { Filter = "Markdown-Prompts (*.md)|*.md|Alle Dateien (*.*)|*.*", CheckFileExists = true }; if (dialog.ShowDialog(this) == DialogResult.OK) prompt.Text = dialog.FileName; };
-        promptPanel.Controls.Add(choose); AddRow(form, "Prompt-Datei", promptPanel); AddRow(form, "", autoCommit); AddRow(form, "Commitnachricht (optional)", commitMessage);
-        Controls.Add(form); Controls.Add(Buttons(OnAccept));
+        foreach (var value in projects.Values.OrderBy(x => x.Name)) project.Items.Add(new ProjectOption(value));
+        project.DropDownWidth = 520;
+        project.SelectedIndexChanged += (_, _) =>
+        {
+            if (!string.IsNullOrWhiteSpace(prompt.Text) && !PromptBelongsToSelectedProject(prompt.Text))
+                prompt.Clear();
+        };
+        AddRow(form, "Projekt", project);
+        var promptPanel = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2 };
+        promptPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        promptPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        promptPanel.Controls.Add(prompt, 0, 0); var choosePrompt = new Button { Text = "Datei wählen …", AutoSize = true };
+        choosePrompt.Click += (_, _) =>
+        {
+            var selectedProject = SelectedProject;
+            if (selectedProject is null)
+            {
+                MessageBox.Show(this, "Bitte zuerst ein Projekt auswählen.");
+                return;
+            }
+            using var dialog = new OpenFileDialog
+            {
+                Filter = "Markdown-Prompts (*.md)|*.md|Alle Dateien (*.*)|*.*",
+                CheckFileExists = true,
+                InitialDirectory = selectedProject.RootPath,
+                RestoreDirectory = true
+            };
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            if (!IsPathWithinRoot(dialog.FileName, selectedProject.RootPath))
+            {
+                MessageBox.Show(this, "Die Prompt-Datei muss innerhalb des gewählten Projektroots liegen.");
+                return;
+            }
+            prompt.Text = dialog.FileName;
+        };
+        promptPanel.Controls.Add(choosePrompt, 1, 0); AddRow(form, "Prompt-Datei", promptPanel);
+        AddRow(form, "", autoCommit); AddRow(form, "Commitnachricht (optional)", commitMessage);
+        Controls.Add(form); Controls.Add(Buttons(OnAccept, readOnly));
         foreach (var p in platforms) platform.Items.Add(p.Id.Value);
         platform.SelectedIndexChanged += (_, _) => LoadModels(); model.SelectedIndexChanged += (_, _) => LoadEfforts();
         if (item is null) { if (platform.Items.Count > 0) platform.SelectedIndex = 0; }
         else
         {
             title.Text = item.Title; priority.Value = item.Priority.Value; platform.SelectedItem = item.PlatformId.Value;
+            if (platform.SelectedIndex < 0 && platform.Items.Count > 0) platform.SelectedIndex = 0;
             LoadModels(); model.SelectedItem = item.ModelId.Value; LoadEfforts(); effort.SelectedItem = item.Effort.Value;
             autoCommit.Checked = item.AutoCommit; commitMessage.Text = item.CommitMessage ?? "";
-            prompt.Text = item.ProjectId is { } id && projects.TryGetValue(id, out var project)
-                ? Path.GetFullPath(item.PromptPath.Value, project.RootPath) : item.PromptPath.Value;
-            platform.Enabled = model.Enabled = effort.Enabled = !item.HasExecutionStarted;
+            var knownProject = item.ProjectId is { } id && projects.TryGetValue(id, out var project) ? project : null;
+            if (knownProject is not null)
+                this.project.SelectedItem = this.project.Items.Cast<ProjectOption>()
+                    .First(x => x.Definition.Id == knownProject.Id);
+            prompt.Text = knownProject is null ? item.PromptPath.Value
+                : Path.GetFullPath(item.PromptPath.Value, knownProject.RootPath);
         }
+        if (item is null && project.Items.Count > 0) project.SelectedIndex = 0;
+        form.Enabled = !readOnly;
     }
 
     public WorkItemEditModel Value => new(title.Text.Trim(), (int)priority.Value, platform.Text,
-        model.Text, effort.Text, prompt.Text.Trim(), autoCommit.Checked, commitMessage.Text.Trim());
+        model.Text, effort.Text, prompt.Text.Trim(), autoCommit.Checked, commitMessage.Text.Trim(),
+        SelectedProject?.Id);
+
+    private ProjectDefinition? SelectedProject => (project.SelectedItem as ProjectOption)?.Definition;
+
+    private bool PromptBelongsToSelectedProject(string path) =>
+        SelectedProject is { } selected && IsPathWithinRoot(path, selected.RootPath);
+
+    private static bool IsPathWithinRoot(string path, string root)
+    {
+        try
+        {
+            var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(path));
+            return !Path.IsPathRooted(relative) && relative != ".."
+                && !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                && !relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
 
     private void LoadModels()
     {
@@ -64,7 +127,12 @@ internal sealed class WorkItemDialog : Form
     {
         if (string.IsNullOrWhiteSpace(title.Text) || string.IsNullOrWhiteSpace(platform.Text)
             || string.IsNullOrWhiteSpace(model.Text) || string.IsNullOrWhiteSpace(effort.Text)
-            || !File.Exists(prompt.Text)) { MessageBox.Show(this, "Bitte Titel, feste Ausführungsauswahl und eine vorhandene Prompt-Datei angeben."); return; }
+            || SelectedProject is null || !File.Exists(prompt.Text) || !PromptBelongsToSelectedProject(prompt.Text))
+        {
+            MessageBox.Show(this,
+                "Bitte Titel, feste Ausführungsauswahl, ein Projekt und eine Prompt-Datei innerhalb dieses Projekts angeben.");
+            return;
+        }
         DialogResult = DialogResult.OK;
     }
 
@@ -84,9 +152,14 @@ internal sealed class WorkItemDialog : Form
     }
     internal static void AddRow(TableLayoutPanel panel, string label, Control control)
     { var row = panel.RowCount++; panel.RowStyles.Add(new RowStyle(SizeType.AutoSize)); panel.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 8, 12, 3) }, 0, row); control.Anchor = AnchorStyles.Left | AnchorStyles.Right; control.Margin = new Padding(3, 5, 3, 3); panel.Controls.Add(control, 1, row); }
-    internal static FlowLayoutPanel Buttons(Action accept)
-    { var panel = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 48, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(8) }; var ok = new Button { Text = "Speichern", AutoSize = true }; var cancel = new Button { Text = "Abbrechen", DialogResult = DialogResult.Cancel, AutoSize = true }; ok.Click += (_, _) => accept(); panel.Controls.Add(ok); panel.Controls.Add(cancel); return panel; }
+    internal static FlowLayoutPanel Buttons(Action accept, bool readOnly = false)
+    { var panel = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 48, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(8) }; var ok = new Button { Text = "Speichern", AutoSize = true, Enabled = !readOnly }; var cancel = new Button { Text = readOnly ? "Schließen" : "Abbrechen", DialogResult = DialogResult.Cancel, AutoSize = true }; ok.Click += (_, _) => accept(); panel.Controls.Add(ok); panel.Controls.Add(cancel); return panel; }
     private static ComboBox Combo() => new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 280 };
+
+    private sealed record ProjectOption(ProjectDefinition Definition)
+    {
+        public override string ToString() => Definition.Name;
+    }
 }
 
 internal sealed class PlatformDialog : Form
@@ -94,10 +167,14 @@ internal sealed class PlatformDialog : Form
     private readonly PlatformDefinition original;
     private readonly TextBox executable = new();
     private readonly TextBox models = new() { Multiline = true, Height = 150, ScrollBars = ScrollBars.Vertical };
+    private readonly CheckBox enabled = new() { Text = "Plattform aktiviert", AutoSize = true };
+    private readonly CheckBox showUsage = new() { Text = "Kontingent in der Statusleiste anzeigen", AutoSize = true };
     public PlatformDialog(PlatformDefinition platform)
     {
-        original = platform; Text = $"Plattform {platform.Id.Value} bearbeiten"; Width = 620; Height = 350; StartPosition = FormStartPosition.CenterParent;
+        original = platform; Text = $"Plattform {platform.Id.Value} bearbeiten"; Width = 620; Height = 420; StartPosition = FormStartPosition.CenterParent;
         var form = WorkItemDialog.CreateLayout(); WorkItemDialog.AddRow(form, "Plattform-ID", new TextBox { Text = platform.Id.Value, ReadOnly = true });
+        enabled.Checked = platform.Enabled; showUsage.Checked = platform.ShowUsageInStatusBar;
+        WorkItemDialog.AddRow(form, "", enabled); WorkItemDialog.AddRow(form, "", showUsage);
         executable.Text = platform.Executable;
         var executablePanel = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, WrapContents = false };
         executable.Width = 300;
@@ -124,7 +201,8 @@ internal sealed class PlatformDialog : Form
         {
             var parsed = models.Lines.Where(x => !string.IsNullOrWhiteSpace(x)).Select(line =>
             { var parts = line.Split(':', 2); if (parts.Length != 2) throw new FormatException($"Ungültige Modellzeile: {line}"); return new PlatformModel(new ModelId(parts[0].Trim()), parts[1].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(x => new EffortLevel(x))); }).ToList();
-            return new PlatformDefinition(original.Id, executable.Text, parsed, original.Capacity);
+            return new PlatformDefinition(original.Id, executable.Text, parsed, original.Capacity,
+                enabled.Checked, showUsage.Checked);
         }
     }
     private void OnAccept() { try { _ = Value; DialogResult = DialogResult.OK; } catch (Exception ex) { MessageBox.Show(this, ex.Message); } }
@@ -167,15 +245,59 @@ internal sealed class UsagePolicyDialog : Form
     private static NumericUpDown PercentBox(decimal value) => new() { Minimum = 0, Maximum = 100, DecimalPlaces = 1, Value = value };
 }
 
-internal sealed class NewProjectDialog : Form
+internal sealed class ProjectDialog : Form
 {
-    private readonly TextBox name = new(); private readonly TextBox root = new(); private readonly TextBox template = new() { Text = "classlib" }; private readonly TextBox branch = new() { Text = "master" };
-    public NewProjectDialog()
+    private readonly ProjectDefinition? original;
+    private readonly TextBox name = new();
+    private readonly TextBox root = new() { Dock = DockStyle.Fill, ReadOnly = true };
+    private readonly TextBox branch = new() { Text = "master" };
+
+    public ProjectDialog(ProjectDefinition? project)
     {
-        Text = "Neues Projekt bestätigt anlegen"; Width = 650; Height = 330; StartPosition = FormStartPosition.CenterParent;
-        var form = WorkItemDialog.CreateLayout(); WorkItemDialog.AddRow(form, "Projektname", name); WorkItemDialog.AddRow(form, "Neues Projektroot", root); WorkItemDialog.AddRow(form, "dotnet-new-Vorlage", template); WorkItemDialog.AddRow(form, "Zielbranch", branch);
+        original = project;
+        Text = project is null ? "Projekt anlegen" : "Projekt bearbeiten";
+        Width = 720; Height = 280; StartPosition = FormStartPosition.CenterParent;
+        var form = WorkItemDialog.CreateLayout();
+        WorkItemDialog.AddRow(form, "Projektname", name);
+        var rootPanel = new TableLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, ColumnCount = 2 };
+        rootPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        rootPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        rootPanel.Controls.Add(root, 0, 0);
+        var chooseRoot = new Button { Text = "Ordner wählen …", AutoSize = true };
+        chooseRoot.Click += (_, _) =>
+        {
+            using var dialog = new FolderBrowserDialog
+            {
+                Description = "Vorhandenes Projektroot auswählen",
+                UseDescriptionForTitle = true,
+                SelectedPath = Directory.Exists(root.Text) ? root.Text : ""
+            };
+            if (dialog.ShowDialog(this) == DialogResult.OK) root.Text = dialog.SelectedPath;
+        };
+        rootPanel.Controls.Add(chooseRoot, 1, 0);
+        WorkItemDialog.AddRow(form, "Projektroot", rootPanel);
+        WorkItemDialog.AddRow(form, "Zielbranch", branch);
         Controls.Add(form); Controls.Add(WorkItemDialog.Buttons(OnAccept));
+        if (project is not null)
+        {
+            name.Text = project.Name;
+            root.Text = project.RootPath;
+            branch.Text = project.TargetBranch;
+        }
     }
-    public ProjectDefinition Value => new(ProjectId.New(), name.Text, root.Text, branch.Text, defaultTemplate: template.Text);
-    private void OnAccept() { try { if (Directory.Exists(root.Text)) throw new InvalidOperationException("Das Zielverzeichnis muss neu sein; sein übergeordnetes Verzeichnis muss existieren."); _ = Value; if (MessageBox.Show(this, $"Projekt jetzt mit 'dotnet new {template.Text}' unter '{root.Text}' erzeugen?", "Neuanlage bestätigen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) DialogResult = DialogResult.OK; } catch (Exception ex) { MessageBox.Show(this, ex.Message); } }
+
+    public ProjectDefinition Value => new(original?.Id ?? ProjectId.New(), name.Text, root.Text, branch.Text,
+        original?.ValidationCommands, original?.DefaultTemplate ?? "classlib");
+
+    private void OnAccept()
+    {
+        try
+        {
+            if (!Directory.Exists(root.Text))
+                throw new InvalidOperationException("Bitte ein vorhandenes Projektroot auswählen.");
+            _ = Value;
+            DialogResult = DialogResult.OK;
+        }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message); }
+    }
 }

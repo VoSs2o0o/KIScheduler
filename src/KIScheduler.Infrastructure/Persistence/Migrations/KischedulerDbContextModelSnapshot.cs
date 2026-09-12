@@ -118,6 +118,9 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                     b.Property<int>("Capacity")
                         .HasColumnType("INTEGER");
 
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Executable")
                         .IsRequired()
                         .HasMaxLength(2048)
@@ -126,6 +129,9 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                     b.Property<string>("ModelsJson")
                         .IsRequired()
                         .HasColumnType("TEXT");
+
+                    b.Property<bool>("ShowUsageInStatusBar")
+                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 

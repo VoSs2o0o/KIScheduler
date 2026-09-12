@@ -15,6 +15,7 @@ public static class SchedulerReasonCodes
     public const string PlatformBlocked = "platform.usage_blocked";
     public const string ProjectHeld = "project.execution_held";
     public const string PlatformBusy = "platform.busy";
+    public const string PlatformDisabled = "platform.disabled";
     public const string ProjectBusy = "project.busy";
     public const string ReservationConflict = "scheduler.reservation_conflict";
     public const string Reserved = "scheduler.reserved";

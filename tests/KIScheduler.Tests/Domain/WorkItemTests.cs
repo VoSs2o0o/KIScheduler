@@ -64,6 +64,31 @@ public sealed class WorkItemTests
     }
 
     [TestMethod]
+    public void AllEditableFieldsAreFrozenWhileRunningAndAfterExecutionStarted()
+    {
+        var item = CreateWorkItem();
+        item.TransitionTo(WorkItemStatus.InWarteschlange);
+        item.TransitionTo(WorkItemStatus.Reserviert);
+
+        Assert.IsFalse(item.CanEdit);
+        Assert.ThrowsException<InvalidOperationException>(() => item.ChangeTitle("Neuer Titel"));
+        Assert.ThrowsException<InvalidOperationException>(() => item.ChangePlanning(
+            new WorkItemPriority(60), new PromptPath("docs/changed.md"), false, ProjectId.New()));
+        Assert.ThrowsException<InvalidOperationException>(() => item.ChangeCommitMessage("Neue Nachricht"));
+
+        item.TransitionTo(WorkItemStatus.InBearbeitung);
+        item.MarkAttemptStarted(Now.AddMinutes(1));
+        item.CompleteCurrentAttempt(ExecutionAttemptResult.TechnischErfolgreich);
+
+        Assert.IsFalse(item.CanEdit);
+        Assert.ThrowsException<InvalidOperationException>(() => item.ChangeTitle("Nach Abschluss"));
+
+        var cancelledBeforeStart = CreateWorkItem();
+        cancelledBeforeStart.TransitionTo(WorkItemStatus.Abgebrochen);
+        Assert.IsFalse(cancelledBeforeStart.CanEdit);
+    }
+
+    [TestMethod]
     public void UsageExceededDoesNotConsumeNormalRetry()
     {
         var item = CreateWorkItem();

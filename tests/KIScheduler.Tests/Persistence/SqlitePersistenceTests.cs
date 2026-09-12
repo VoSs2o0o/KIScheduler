@@ -101,6 +101,36 @@ public sealed class SqlitePersistenceTests
     }
 
     [TestMethod]
+    public async Task UnusedProjectCanBeDeletedWithoutDeletingItsDirectory()
+    {
+        var repository = new SqliteProjectRepository(factory!);
+        var root = Path.GetTempPath();
+        var project = new ProjectDefinition(ProjectId.New(), "Löschbares Projekt", root);
+        await repository.SaveAsync(project);
+
+        Assert.IsTrue(await repository.DeleteAsync(project.Id));
+        Assert.IsNull(await repository.GetAsync(project.Id));
+        Assert.IsFalse(await repository.DeleteAsync(project.Id));
+        Assert.IsTrue(Directory.Exists(root));
+    }
+
+    [TestMethod]
+    public async Task PlatformActivationAndStatusBarPreferenceArePersisted()
+    {
+        var repository = new SqlitePlatformRepository(factory!);
+        var platform = new PlatformDefinition(new PlatformId("codex"), "codex",
+            [new PlatformModel(new ModelId("gpt"), [new EffortLevel("medium")])],
+            enabled: false, showUsageInStatusBar: true);
+
+        await repository.SaveAsync(platform);
+        var restored = await new SqlitePlatformRepository(factory!).GetAsync(platform.Id);
+
+        Assert.IsNotNull(restored);
+        Assert.IsFalse(restored.Enabled);
+        Assert.IsTrue(restored.ShowUsageInStatusBar);
+    }
+
+    [TestMethod]
     public async Task ConcurrentLeaseAttemptsReserveAWorkItemOnlyOnce()
     {
         var repository = new SqliteWorkItemRepository(factory!);

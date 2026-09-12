@@ -129,10 +129,14 @@ public sealed class SchedulerEngine : ISchedulerEngine
             var candidates = await workItems.ListByStatusAsync(DueStatuses, cancellationToken).ConfigureAwait(false);
             if (candidates.Count == 0) return 0;
 
+            var configuredPlatforms = (await platformDefinitions.ListAsync(cancellationToken).ConfigureAwait(false))
+                .ToDictionary(x => x.Id.Value, StringComparer.OrdinalIgnoreCase);
             var allPolicies = await usagePolicies.ListAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
             var activePlatformBlocks = (await blocks.ListActivePlatformBlocksAsync(cancellationToken).ConfigureAwait(false)).ToList();
             var activeProjectHolds = await blocks.ListActiveProjectHoldsAsync(cancellationToken).ConfigureAwait(false);
-            var usageByPlatform = await ReadFreshUsageAsync(candidates, cancellationToken).ConfigureAwait(false);
+            var enabledCandidates = candidates.Where(item => configuredPlatforms.TryGetValue(item.PlatformId.Value,
+                out var definition) && definition.Enabled).ToList();
+            var usageByPlatform = await ReadFreshUsageAsync(enabledCandidates, cancellationToken).ConfigureAwait(false);
             await ReleaseEligiblePlatformBlocksAsync(activePlatformBlocks, allPolicies, usageByPlatform, now, cancellationToken)
                 .ConfigureAwait(false);
             activePlatformBlocks = activePlatformBlocks.Where(block => block.IsActive).ToList();
@@ -151,6 +155,17 @@ public sealed class SchedulerEngine : ISchedulerEngine
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (paused || stopped) break;
+                if (!configuredPlatforms.TryGetValue(item.PlatformId.Value, out var configuredPlatform))
+                {
+                    await RecordDecisionAsync(item, "platform.not_configured", cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+                if (!configuredPlatform.Enabled)
+                {
+                    await RecordDecisionAsync(item, SchedulerReasonCodes.PlatformDisabled, cancellationToken)
+                        .ConfigureAwait(false);
+                    continue;
+                }
                 if (IsPlatformRunning(item.PlatformId))
                 {
                     await RecordDecisionAsync(item, SchedulerReasonCodes.PlatformBusy, cancellationToken).ConfigureAwait(false);
@@ -208,6 +223,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
                     continue;
                 }
 
+                if (paused || stopped) break;
                 var lease = await workItems.TryAcquireLeaseAsync(item.Id, ownerId, now,
                     options.LeaseDuration, cancellationToken).ConfigureAwait(false);
                 if (lease is null)
@@ -215,6 +231,11 @@ public sealed class SchedulerEngine : ISchedulerEngine
                     await RecordDecisionAsync(item, SchedulerReasonCodes.ReservationConflict, cancellationToken)
                         .ConfigureAwait(false);
                     continue;
+                }
+                if (paused || stopped)
+                {
+                    await workItems.ReleaseLeaseAsync(lease.Id, cancellationToken).ConfigureAwait(false);
+                    break;
                 }
 
                 item.TransitionTo(WorkItemStatus.Reserviert);

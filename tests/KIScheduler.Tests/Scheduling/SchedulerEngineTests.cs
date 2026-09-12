@@ -154,10 +154,29 @@ public sealed class SchedulerEngineTests
         await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("paused"), 50);
 
         fixture.Engine.Pause();
+        Assert.IsTrue(fixture.Engine.IsPaused);
         Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
         fixture.Engine.Resume();
+        Assert.IsFalse(fixture.Engine.IsPaused);
         Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
         await fixture.Engine.WaitForIdleAsync();
+    }
+
+    [TestMethod]
+    public async Task DisabledPlatformDoesNotReadUsageOrDispatchQueuedWork()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("disabled"), 50);
+        await fixture.SetPlatformEnabledAsync("codex", false);
+        var readsBefore = fixture.UsageReadCount("codex");
+
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
+
+        Assert.AreEqual(readsBefore, fixture.UsageReadCount("codex"));
+        Assert.AreEqual(0, fixture.Platform("codex").Requests.Count);
+        Assert.AreEqual(WorkItemStatus.InWarteschlange, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+        Assert.IsTrue((await fixture.History.ListEventsAsync(item.Id))
+            .Any(x => x.Data.GetValueOrDefault("reasonCode") == SchedulerReasonCodes.PlatformDisabled));
     }
 
     [TestMethod]
@@ -358,6 +377,16 @@ public sealed class SchedulerEngineTests
         }
 
         public FakeAiPlatform Platform(string id) => platformMap[id];
+
+        public int UsageReadCount(string id) => usageMap[id].ForceRefreshRequests.Count;
+
+        public async Task SetPlatformEnabledAsync(string id, bool enabled)
+        {
+            var repository = new SqlitePlatformRepository(contextFactory);
+            var current = (await repository.GetAsync(new PlatformId(id)))!;
+            await repository.SaveAsync(new PlatformDefinition(current.Id, current.Executable, current.Models,
+                current.Capacity, enabled, current.ShowUsageInStatusBar));
+        }
 
         public void SetUsage(string id, decimal used) => usageMap[id].SetCurrent(
             UsageReadResult.Available(CreateSnapshot(id, Clock.UtcNow, used)));

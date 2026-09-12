@@ -167,6 +167,8 @@ public sealed class PlatformRow
     public string Id { get; set; } = "";
     public string Executable { get; set; } = "";
     public int Capacity { get; set; }
+    public bool Enabled { get; set; } = true;
+    public bool ShowUsageInStatusBar { get; set; }
     public string ModelsJson { get; set; } = "[]";
 }
 

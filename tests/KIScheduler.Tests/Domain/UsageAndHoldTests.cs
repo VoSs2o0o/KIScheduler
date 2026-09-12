@@ -1,4 +1,5 @@
 using KIScheduler.Core.Domain;
+using KIScheduler.Core.Scheduling;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace KIScheduler.Tests.Domain;
@@ -26,6 +27,21 @@ public sealed class UsageAndHoldTests
         ]);
 
         Assert.AreEqual(2, snapshot.Windows.Count);
+    }
+
+    [TestMethod]
+    public void StatusBarUsageUsesCompactPercentagesAndNextResetCountdown()
+    {
+        var snapshot = new UsageSnapshot(new PlatformId("codex"), Now, "app-server", UsageQuality.Aktuell,
+        [
+            new UsageWindow("primary", new UsagePercent(1), Now.AddHours(6).AddMinutes(20),
+                "app-server", Now, UsageQuality.Aktuell),
+            new UsageWindow("secondary", new UsagePercent(58), Now.AddDays(2),
+                "app-server", Now, UsageQuality.Aktuell)
+        ]);
+
+        Assert.AreEqual("1%/58%, 6:19", UsageStatusFormatter.Format(snapshot, Now.AddSeconds(1)));
+        Assert.AreEqual("unbekannt", UsageStatusFormatter.Format(null, Now));
     }
 
     [TestMethod]

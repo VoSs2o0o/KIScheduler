@@ -7,6 +7,7 @@ public interface IProjectRepository
     Task<ProjectDefinition?> GetAsync(ProjectId id, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ProjectDefinition>> ListAsync(CancellationToken cancellationToken = default);
     Task SaveAsync(ProjectDefinition project, CancellationToken cancellationToken = default);
+    Task<bool> DeleteAsync(ProjectId id, CancellationToken cancellationToken = default);
 }
 
 public interface IPlatformRepository

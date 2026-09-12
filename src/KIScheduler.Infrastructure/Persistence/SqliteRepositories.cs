@@ -126,6 +126,11 @@ public sealed class SqliteProjectRepository(IDbContextFactory<KischedulerDbConte
         if (existing is null) db.Projects.Add(row); else db.Entry(existing).CurrentValues.SetValues(row);
         await db.SaveChangesAsync(cancellationToken);
     }
+    public async Task<bool> DeleteAsync(ProjectId id, CancellationToken cancellationToken = default)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        return await db.Projects.Where(x => x.Id == id.Value).ExecuteDeleteAsync(cancellationToken) > 0;
+    }
     private static ProjectDefinition ToDomain(ProjectRow row) => new(new(row.Id), row.Name, row.RootPath, row.TargetBranch,
         (PersistenceMappings.Deserialize<List<ValidationCommandData>>(row.ValidationCommandsJson) ?? [])
             .Select(x => new ValidationCommand(x.Executable, x.Arguments, x.Required)), row.DefaultTemplate);
@@ -153,6 +158,8 @@ public sealed class SqlitePlatformRepository(IDbContextFactory<KischedulerDbCont
             Id = platform.Id.Value,
             Executable = platform.Executable,
             Capacity = platform.Capacity,
+            Enabled = platform.Enabled,
+            ShowUsageInStatusBar = platform.ShowUsageInStatusBar,
             ModelsJson = PersistenceMappings.Serialize(platform.Models.Select(x => new ModelData(x.Id.Value,
                 x.SupportedEfforts.Select(e => e.Value).ToArray())))
         };
@@ -162,6 +169,7 @@ public sealed class SqlitePlatformRepository(IDbContextFactory<KischedulerDbCont
     }
     private static PlatformDefinition ToDomain(PlatformRow row) => new(new(row.Id), row.Executable,
         (PersistenceMappings.Deserialize<List<ModelData>>(row.ModelsJson) ?? [])
-            .Select(x => new PlatformModel(new(x.Id), x.Efforts.Select(e => new EffortLevel(e)))), row.Capacity);
+            .Select(x => new PlatformModel(new(x.Id), x.Efforts.Select(e => new EffortLevel(e)))), row.Capacity,
+        row.Enabled, row.ShowUsageInStatusBar);
     private sealed record ModelData(string Id, string[] Efforts);
 }

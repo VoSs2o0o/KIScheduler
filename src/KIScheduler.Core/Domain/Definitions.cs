@@ -41,7 +41,8 @@ public sealed record ValidationCommand
 
 public sealed class PlatformDefinition
 {
-    public PlatformDefinition(PlatformId id, string executable, IEnumerable<PlatformModel> models, int capacity = 1)
+    public PlatformDefinition(PlatformId id, string executable, IEnumerable<PlatformModel> models, int capacity = 1,
+        bool enabled = true, bool showUsageInStatusBar = false)
     {
         Id = id ?? throw new ArgumentNullException(nameof(id));
         Executable = DomainValidation.Required(executable, nameof(executable));
@@ -63,12 +64,16 @@ public sealed class PlatformDefinition
 
         Models = new ReadOnlyCollection<PlatformModel>(configuredModels);
         Capacity = capacity;
+        Enabled = enabled;
+        ShowUsageInStatusBar = showUsageInStatusBar;
     }
 
     public PlatformId Id { get; }
     public string Executable { get; }
     public IReadOnlyList<PlatformModel> Models { get; }
     public int Capacity { get; }
+    public bool Enabled { get; }
+    public bool ShowUsageInStatusBar { get; }
 
     public bool Supports(ModelId modelId, EffortLevel effort) => Models.Any(model => model.Supports(modelId, effort));
 }

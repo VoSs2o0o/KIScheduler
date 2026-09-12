@@ -8,7 +8,7 @@ using Microsoft.Extensions.Hosting;
 namespace KIScheduler.WinForms;
 
 public sealed record WorkItemEditModel(string Title, int Priority, string PlatformId, string ModelId,
-    string Effort, string PromptPath, bool AutoCommit, string? CommitMessage, string? ConfirmedProjectRoot = null);
+    string Effort, string PromptPath, bool AutoCommit, string? CommitMessage, ProjectId? ProjectId = null);
 
 public sealed record QueueRow(WorkItem Item, string Project, string Usage, string Status, string Reason);
 public sealed record PlatformRow(PlatformDefinition Definition, PlatformHealth Health, UsageSnapshot? Usage,
@@ -16,11 +16,6 @@ public sealed record PlatformRow(PlatformDefinition Definition, PlatformHealth H
 public sealed record DashboardData(IReadOnlyList<QueueRow> Queue, IReadOnlyList<PlatformRow> Platforms,
     IReadOnlyList<PlatformUsageBlock> PlatformBlocks, IReadOnlyList<ProjectExecutionHold> ProjectHolds,
     IReadOnlyList<UsagePolicy> Policies, IReadOnlyDictionary<ProjectId, ProjectDefinition> Projects);
-
-public sealed class ProjectRootRequiredException(ProjectRootResolution resolution) : InvalidOperationException(resolution.Message)
-{
-    public ProjectRootResolution Resolution { get; } = resolution;
-}
 
 public sealed class SchedulerUiService(
     IWorkItemRepository workItems,
@@ -30,8 +25,6 @@ public sealed class SchedulerUiService(
     IUsageSnapshotRepository snapshots,
     IExecutionHistoryRepository history,
     IExecutionBlockRepository blocks,
-    IProjectRootResolver rootResolver,
-    IProjectCreationService projectCreation,
     IAiPlatformRegistry platformRegistry,
     IUsageProviderRegistry usageRegistry,
     UsagePolicyEvaluator usageEvaluator,
@@ -60,10 +53,13 @@ public sealed class SchedulerUiService(
         var holds = projectHoldsTask.Result;
         var platformRows = await Task.WhenAll(platformListTask.Result.Select(async definition =>
         {
-            var health = await GetHealthAsync(definition, refreshProviders, cancellationToken).ConfigureAwait(false);
+            var health = definition.Enabled
+                ? await GetHealthAsync(definition, refreshProviders, cancellationToken).ConfigureAwait(false)
+                : new PlatformHealth(PlatformHealthStatus.Unavailable, "Plattform deaktiviert.");
             UsageSnapshot? snapshot = null;
             string? usageMessage = usageMessages.GetValueOrDefault(definition.Id.Value);
-            if (refreshProviders && usageRegistry.TryGet(definition.Id, out var provider) && provider is not null)
+            if (definition.Enabled && refreshProviders
+                && usageRegistry.TryGet(definition.Id, out var provider) && provider is not null)
             {
                 try
                 {
@@ -83,8 +79,8 @@ public sealed class SchedulerUiService(
                 }
             }
             snapshot ??= await snapshots.GetLatestAsync(definition.Id, cancellationToken).ConfigureAwait(false);
-            return new PlatformRow(definition, health, snapshot,
-                DescribeLimits(definition, policyListTask.Result, snapshot), usageMessage);
+            return new PlatformRow(definition, health, snapshot, definition.Enabled
+                ? DescribeLimits(definition, policyListTask.Result, snapshot) : "Deaktiviert", usageMessage);
         })).ConfigureAwait(false);
 
         var queue = itemListTask.Result.Select(item =>
@@ -95,7 +91,8 @@ public sealed class SchedulerUiService(
             var platform = platformRows.FirstOrDefault(x => PlatformEquals(x.Definition.Id, item.PlatformId));
             var usage = platform?.Usage is null ? "unbekannt" : string.Join(", ",
                 platform.Usage.Windows.Select(x => $"{x.Name}: {x.UsedPercent}"));
-            var reason = LatestBlockingReason(item, held, platformBlocksTask.Result, platform?.Usage);
+            var reason = platform is { Definition.Enabled: false } ? "Plattform deaktiviert"
+                : LatestBlockingReason(item, held, platformBlocksTask.Result, platform?.Usage);
             return new QueueRow(item, project, usage, item.GetDisplayStatus(held).ToString(), reason);
         }).ToList();
         return new DashboardData(queue, platformRows, platformBlocksTask.Result, holds,
@@ -105,29 +102,23 @@ public sealed class SchedulerUiService(
     public async Task<WorkItem> SaveWorkItemAsync(WorkItemEditModel model, WorkItem? existing = null,
         CancellationToken cancellationToken = default)
     {
+        if (existing is { CanEdit: false })
+            throw new InvalidOperationException("Ein laufender oder bereits ausgeführter Auftrag kann nicht mehr gespeichert werden.");
         ValidateWorkItem(model);
         var definition = await platforms.GetAsync(new PlatformId(model.PlatformId), cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Plattform '{model.PlatformId}' ist nicht konfiguriert.");
+        if (!definition.Enabled && (existing is null || !PlatformEquals(definition.Id, existing.PlatformId)))
+            throw new InvalidOperationException($"Plattform '{model.PlatformId}' ist deaktiviert.");
         var platformId = definition.Id;
         var modelId = new ModelId(model.ModelId);
         var effort = new EffortLevel(model.Effort);
         if (!definition.Supports(modelId, effort))
             throw new InvalidOperationException("Das gewählte Modell unterstützt die Effort-Stufe nicht.");
 
-        var resolution = rootResolver.Resolve(model.PromptPath);
-        string root;
-        if (resolution.IsResolved) root = resolution.ProjectRoot!;
-        else if (!string.IsNullOrWhiteSpace(model.ConfirmedProjectRoot))
-            root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(model.ConfirmedProjectRoot));
-        else throw new ProjectRootRequiredException(resolution);
-
-        var knownProjects = await projects.ListAsync(cancellationToken).ConfigureAwait(false);
-        var project = knownProjects.FirstOrDefault(x => PathEquals(x.RootPath, root));
-        if (project is null)
-        {
-            project = new ProjectDefinition(ProjectId.New(), new DirectoryInfo(root).Name, root);
-            await projects.SaveAsync(project, cancellationToken).ConfigureAwait(false);
-        }
+        var project = await projects.GetAsync(model.ProjectId!.Value, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("Das gewählte Projekt wurde nicht gefunden.");
+        if (!IsPathWithinRoot(model.PromptPath, project.RootPath))
+            throw new InvalidOperationException("Die Prompt-Datei muss innerhalb des gewählten Projektroots liegen.");
         var storedPrompt = Path.GetRelativePath(project.RootPath, Path.GetFullPath(model.PromptPath));
         var promptPath = new PromptPath(storedPrompt);
 
@@ -223,9 +214,41 @@ public sealed class SchedulerUiService(
     public Task SaveSettingAsync(string key, string value, CancellationToken cancellationToken = default) =>
         settings.SetAsync(key, value, cancellationToken);
 
-    public Task<ProjectCreationResult> CreateProjectAsync(ProjectDefinition project,
-        CancellationToken cancellationToken = default) =>
-        projectCreation.CreateAsync(new ProjectCreationRequest(project, true), cancellationToken);
+    public async Task SaveProjectAsync(ProjectDefinition project,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Directory.Exists(project.RootPath))
+            throw new DirectoryNotFoundException($"Das Projektroot wurde nicht gefunden: {project.RootPath}");
+        var configured = await projects.ListAsync(cancellationToken).ConfigureAwait(false);
+        if (configured.Any(x => x.Id != project.Id && PathEquals(x.RootPath, project.RootPath)))
+            throw new InvalidOperationException("Dieses Projektroot ist bereits einem anderen Projekt zugeordnet.");
+
+        var previous = configured.FirstOrDefault(x => x.Id == project.Id);
+        if (previous is not null && !PathEquals(previous.RootPath, project.RootPath))
+        {
+            var referencedItems = (await workItems.ListByStatusAsync(Enum.GetValues<WorkItemStatus>(), cancellationToken)
+                .ConfigureAwait(false)).Where(x => x.ProjectId == project.Id).ToList();
+            if (referencedItems.Any(x =>
+                {
+                    var promptPath = Path.GetFullPath(x.PromptPath.Value, project.RootPath);
+                    return !File.Exists(promptPath) || !IsPathWithinRoot(promptPath, project.RootPath);
+                }))
+                throw new InvalidOperationException(
+                    "Das Projektroot kann nicht geändert werden, weil dort nicht alle Prompt-Dateien der vorhandenen Aufträge liegen.");
+        }
+        await projects.SaveAsync(project, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task DeleteProjectAsync(ProjectDefinition project,
+        CancellationToken cancellationToken = default)
+    {
+        var referenced = (await workItems.ListByStatusAsync(Enum.GetValues<WorkItemStatus>(), cancellationToken)
+            .ConfigureAwait(false)).Any(x => x.ProjectId == project.Id);
+        if (referenced)
+            throw new InvalidOperationException("Das Projekt kann nicht gelöscht werden, solange Aufträge darauf verweisen.");
+        if (!await projects.DeleteAsync(project.Id, cancellationToken).ConfigureAwait(false))
+            throw new InvalidOperationException("Das Projekt wurde nicht gefunden.");
+    }
 
     public static void ValidateRegex(string pattern) => _ = new Regex(pattern,
         RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
@@ -282,6 +305,7 @@ public sealed class SchedulerUiService(
         ArgumentException.ThrowIfNullOrWhiteSpace(model.ModelId);
         ArgumentException.ThrowIfNullOrWhiteSpace(model.Effort);
         ArgumentException.ThrowIfNullOrWhiteSpace(model.PromptPath);
+        if (model.ProjectId is null) throw new ArgumentException("Ein Projekt muss ausgewählt werden.", nameof(model));
         _ = new WorkItemPriority(model.Priority);
         if (!File.Exists(model.PromptPath)) throw new FileNotFoundException("Die Prompt-Datei wurde nicht gefunden.", model.PromptPath);
     }
@@ -291,6 +315,14 @@ public sealed class SchedulerUiService(
     private static bool PathEquals(string left, string right) =>
         string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)), StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsPathWithinRoot(string path, string root)
+    {
+        var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(path));
+        return !Path.IsPathRooted(relative) && relative != ".."
+            && !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+            && !relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal);
+    }
 }
 
 internal sealed class UiDefaultsInitializer(IPlatformRepository platforms, IUsagePolicyRepository policies,

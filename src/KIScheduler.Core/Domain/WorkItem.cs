@@ -34,6 +34,9 @@ public sealed class WorkItem
     public DateTimeOffset CreatedAtUtc { get; }
     public DateTimeOffset? FirstAttemptStartedAtUtc { get; private set; }
     public bool HasExecutionStarted { get; private set; }
+    public bool CanEdit => !HasExecutionStarted && Status is WorkItemStatus.Entwurf
+        or WorkItemStatus.InWarteschlange or WorkItemStatus.WartetAufUsage
+        or WorkItemStatus.ProjektFehlt or WorkItemStatus.Pausiert;
     public WorkItemStatus Status { get; private set; }
     public int NormalRetryCount { get; private set; }
 
@@ -118,28 +121,33 @@ public sealed class WorkItem
 
     public void ChangeExecutionConfiguration(PlatformId platformId, ModelId modelId, EffortLevel effort)
     {
-        if (HasExecutionStarted)
-        {
-            throw new InvalidOperationException("Plattform, Modell und Effort können nach dem Start eines Versuchs nicht geändert werden.");
-        }
+        EnsureCanEdit();
 
         PlatformId = platformId ?? throw new ArgumentNullException(nameof(platformId));
         ModelId = modelId ?? throw new ArgumentNullException(nameof(modelId));
         Effort = effort ?? throw new ArgumentNullException(nameof(effort));
     }
 
-    public void ChangeTitle(string title) => Title = DomainValidation.Required(title, nameof(title));
+    public void ChangeTitle(string title)
+    {
+        EnsureCanEdit();
+        Title = DomainValidation.Required(title, nameof(title));
+    }
 
     public void ChangePlanning(WorkItemPriority priority, PromptPath promptPath, bool autoCommit, ProjectId? projectId)
     {
+        EnsureCanEdit();
         Priority = priority;
         PromptPath = promptPath ?? throw new ArgumentNullException(nameof(promptPath));
         AutoCommit = autoCommit;
         ProjectId = projectId;
     }
 
-    public void ChangeCommitMessage(string? commitMessage) =>
+    public void ChangeCommitMessage(string? commitMessage)
+    {
+        EnsureCanEdit();
         CommitMessage = NormalizeCommitMessage(commitMessage);
+    }
 
     public string ResolveCommitMessage()
     {
@@ -160,6 +168,12 @@ public sealed class WorkItem
         if (value.Length > 1000)
             throw new ArgumentException("Die Commitnachricht darf höchstens 1000 Zeichen enthalten.", nameof(value));
         return value;
+    }
+
+    private void EnsureCanEdit()
+    {
+        if (!CanEdit)
+            throw new InvalidOperationException("Ein laufender oder bereits ausgeführter Auftrag kann nicht mehr geändert werden.");
     }
 
     public WorkItemDisplayStatus GetDisplayStatus(bool projectHasExecutionHold)

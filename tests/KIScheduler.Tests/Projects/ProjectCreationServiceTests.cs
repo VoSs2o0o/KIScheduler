@@ -128,5 +128,7 @@ public sealed class ProjectCreationServiceTests
             SavedProject = project;
             return Task.CompletedTask;
         }
+        public Task<bool> DeleteAsync(ProjectId id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
     }
 }

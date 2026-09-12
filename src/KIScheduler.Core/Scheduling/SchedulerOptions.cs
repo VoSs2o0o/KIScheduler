@@ -5,6 +5,7 @@ public sealed class SchedulerOptions
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(10);
     public TimeSpan LeaseDuration { get; set; } = TimeSpan.FromHours(24);
     public TimeSpan ExecutionTimeout { get; set; } = TimeSpan.FromHours(2);
+    public TimeSpan HistoryUsageEventInterval { get; set; } = TimeSpan.FromMinutes(10);
     public TimeSpan AgingInterval { get; set; } = TimeSpan.FromMinutes(30);
     public int AgingBonusPerInterval { get; set; } = 1;
 
@@ -13,6 +14,8 @@ public sealed class SchedulerOptions
         if (PollInterval <= TimeSpan.Zero) throw new InvalidOperationException("PollInterval muss größer als null sein.");
         if (LeaseDuration <= TimeSpan.Zero) throw new InvalidOperationException("LeaseDuration muss größer als null sein.");
         if (ExecutionTimeout <= TimeSpan.Zero) throw new InvalidOperationException("ExecutionTimeout muss größer als null sein.");
+        if (HistoryUsageEventInterval <= TimeSpan.Zero)
+            throw new InvalidOperationException("HistoryUsageEventInterval muss größer als null sein.");
         if (LeaseDuration < ExecutionTimeout)
             throw new InvalidOperationException("LeaseDuration darf nicht kürzer als ExecutionTimeout sein.");
         if (AgingInterval <= TimeSpan.Zero) throw new InvalidOperationException("AgingInterval muss größer als null sein.");

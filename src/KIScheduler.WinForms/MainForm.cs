@@ -7,7 +7,11 @@ public sealed class MainForm : Form
 {
     private readonly SchedulerUiService ui;
     private readonly ISchedulerEngine scheduler;
+    private readonly SchedulerOptions schedulerOptions;
+    private readonly TabControl tabs = new() { Dock = DockStyle.Fill };
+    private readonly TabPage historyPage;
     private readonly DataGridView queue = Grid();
+    private readonly DataGridView projectGrid = Grid();
     private readonly DataGridView platformGrid = Grid();
     private readonly DataGridView blockGrid = Grid();
     private readonly DataGridView attemptsGrid = Grid();
@@ -15,41 +19,62 @@ public sealed class MainForm : Form
     private readonly DataGridView policyGrid = Grid();
     private readonly TextBox filter = new() { PlaceholderText = "Titel, Projekt oder Begründung filtern …", Dock = DockStyle.Fill };
     private readonly ComboBox statusFilter = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 190 };
-    private readonly ToolStripStatusLabel workerState = new();
+    private readonly ToolStripStatusLabel workerState = new()
+        { BorderSides = ToolStripStatusLabelBorderSides.All, Padding = new Padding(6, 2, 6, 2) };
+    private readonly ToolStripStatusLabel usageState = new()
+        { BorderSides = ToolStripStatusLabelBorderSides.Left, Visible = false };
     private readonly ToolStripStatusLabel runningState = new();
+    private readonly ToolStripButton priorityIncreaseButton = new() { Text = "Priorität +", Enabled = false };
+    private readonly ToolStripButton priorityDecreaseButton = new() { Text = "Priorität −", Enabled = false };
+    private readonly ToolStripButton itemPauseButton = new() { Text = "Pausieren/Fortsetzen", Enabled = false };
+    private readonly ToolStripButton cancelButton = new() { Text = "Abbrechen", Enabled = false };
+    private readonly ToolStripButton requeueButton = new() { Text = "Erneut einreihen", Enabled = false };
+    private readonly ToolStripButton historyButton = new() { Text = "Verlauf", Enabled = false };
+    private readonly ToolStripButton schedulerPauseButton = new();
+    private readonly ToolStripMenuItem schedulerPauseMenuItem = new();
     private readonly NotifyIcon tray = new() { Icon = SystemIcons.Application, Text = "KIScheduler", Visible = true };
     private readonly System.Windows.Forms.Timer refreshTimer = new() { Interval = 2500 };
     private readonly SemaphoreSlim refreshGate = new(1, 1);
     private DashboardData? data;
     private bool allowClose;
+    private bool restoringQueueSelection;
+    private int historyLoadVersion;
 
-    public MainForm(SchedulerUiService ui, ISchedulerEngine scheduler)
+    public MainForm(SchedulerUiService ui, ISchedulerEngine scheduler, SchedulerOptions schedulerOptions)
     {
         this.ui = ui;
         this.scheduler = scheduler;
+        this.schedulerOptions = schedulerOptions;
         Text = "KIScheduler";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1000, 650);
         ClientSize = new Size(1320, 780);
         Icon = SystemIcons.Application;
 
-        var tabs = new TabControl { Dock = DockStyle.Fill };
+        historyPage = BuildHistoryPage();
         tabs.TabPages.Add(BuildQueuePage());
+        tabs.TabPages.Add(BuildProjectsPage());
         tabs.TabPages.Add(BuildPlatformPage());
         tabs.TabPages.Add(BuildBlocksPage());
-        tabs.TabPages.Add(BuildHistoryPage());
+        tabs.TabPages.Add(historyPage);
         tabs.TabPages.Add(BuildPoliciesPage());
         tabs.TabPages.Add(BuildSettingsPage());
         var status = new StatusStrip();
-        status.Items.AddRange([workerState, new ToolStripStatusLabel { Spring = true }, runningState]);
+        status.Items.AddRange([workerState, new ToolStripStatusLabel { Spring = true }, usageState, runningState]);
         Controls.Add(tabs);
         Controls.Add(status);
 
         ConfigureTray();
+        UpdateSchedulerPauseUi();
         Shown += async (_, _) => { await RefreshAsync(true); refreshTimer.Start(); };
         refreshTimer.Tick += async (_, _) => await RefreshAsync();
-        queue.SelectionChanged += async (_, _) => await LoadHistoryAsync();
+        queue.SelectionChanged += async (_, _) =>
+        {
+            UpdateQueueActionStates();
+            if (!restoringQueueSelection) await LoadHistoryAsync();
+        };
         queue.CellDoubleClick += async (_, e) => { if (e.RowIndex >= 0) await EditSelectedAsync(); };
+        projectGrid.CellDoubleClick += async (_, e) => { if (e.RowIndex >= 0) await EditSelectedProjectAsync(); };
         platformGrid.CellDoubleClick += async (_, e) => { if (e.RowIndex >= 0) await EditPlatformAsync(); };
         policyGrid.CellDoubleClick += async (_, e) => { if (e.RowIndex >= 0) await EditSelectedPolicyAsync(); };
         filter.TextChanged += (_, _) => ApplyQueueRows();
@@ -70,15 +95,25 @@ public sealed class MainForm : Form
         tools.Items.Add(Button("Neu", async () => await EditWorkItemAsync(null)));
         tools.Items.Add(Button("Neues Projekt", async () => await CreateProjectAsync()));
         tools.Items.Add(Button("Bearbeiten", async () => await EditSelectedAsync()));
+        tools.Items.Add(Button("Duplizieren", async () => await DuplicateSelectedAsync()));
+        historyButton.Click += async (_, _) => await ShowSelectedHistoryAsync();
+        tools.Items.Add(historyButton);
         tools.Items.Add(new ToolStripSeparator());
-        tools.Items.Add(Button("Priorität +", async () => await ChangePriorityAsync(5)));
-        tools.Items.Add(Button("Priorität −", async () => await ChangePriorityAsync(-5)));
-        tools.Items.Add(Button("Pausieren/Fortsetzen", async () => await ToggleItemPauseAsync()));
-        tools.Items.Add(Button("Abbrechen", async () => await CancelSelectedAsync()));
-        tools.Items.Add(Button("Erneut einreihen", async () => await RequeueSelectedAsync()));
+        priorityIncreaseButton.Click += async (_, _) => await ChangePriorityAsync(5);
+        priorityDecreaseButton.Click += async (_, _) => await ChangePriorityAsync(-5);
+        tools.Items.Add(priorityIncreaseButton);
+        tools.Items.Add(priorityDecreaseButton);
+        itemPauseButton.Click += async (_, _) => await ToggleItemPauseAsync();
+        cancelButton.Click += async (_, _) => await CancelSelectedAsync();
+        requeueButton.Click += async (_, _) => await RequeueSelectedAsync();
+        tools.Items.Add(itemPauseButton);
+        tools.Items.Add(cancelButton);
+        tools.Items.Add(requeueButton);
         tools.Items.Add(new ToolStripSeparator());
         tools.Items.Add(Button("Usage aktualisieren", async () => await RefreshAsync(true)));
-        tools.Items.Add(Button("Verarbeitung pausieren", ToggleSchedulerPause));
+        schedulerPauseButton.Click += (_, _) => ToggleSchedulerPause();
+        schedulerPauseButton.ToolTipText = "Pausiert neue Starts; bereits laufende Aufträge laufen kontrolliert weiter.";
+        tools.Items.Add(schedulerPauseButton);
         statusFilter.Items.Add("Alle Status");
         foreach (var value in Enum.GetValues<WorkItemDisplayStatus>()) statusFilter.Items.Add(value.ToString());
         statusFilter.SelectedIndex = 0;
@@ -90,13 +125,25 @@ public sealed class MainForm : Form
 
     private TabPage BuildPlatformPage()
     {
-        platformGrid.Columns.AddRange(TextColumn("Plattform", "Platform", 110), TextColumn("Zustand", "Health", 130),
+        platformGrid.Columns.AddRange(TextColumn("Plattform", "Platform", 110), TextColumn("Aktiv", "Enabled", 65),
+            TextColumn("Statusleiste", "StatusBar", 85), TextColumn("Zustand", "Health", 130),
             TextColumn("Details", "Details", 260), TextColumn("Verbrauch und Reset", "Usage", 430),
             TextColumn("Wirksame Grenzwerte", "Limits", 400));
         var tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
         tools.Items.Add(Button("Jetzt prüfen", async () => await RefreshAsync(true)));
         tools.Items.Add(Button("Plattform bearbeiten", async () => await EditPlatformAsync()));
         return Page("Plattformen & Usage", platformGrid, tools);
+    }
+
+    private TabPage BuildProjectsPage()
+    {
+        projectGrid.Columns.AddRange(TextColumn("Name", "Name", 240),
+            TextColumn("Projektroot", "Root", 650), TextColumn("Zielbranch", "Branch", 180));
+        var tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
+        tools.Items.Add(Button("Projekt anlegen", async () => await EditProjectAsync(null)));
+        tools.Items.Add(Button("Projekt bearbeiten", async () => await EditSelectedProjectAsync()));
+        tools.Items.Add(Button("Projekt löschen", async () => await DeleteSelectedProjectAsync()));
+        return Page("Projekte", projectGrid, tools);
     }
 
     private TabPage BuildBlocksPage()
@@ -119,9 +166,9 @@ public sealed class MainForm : Form
         var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 220 };
         split.Panel1.Controls.Add(attemptsGrid); split.Panel2.Controls.Add(eventsGrid);
         var tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
-        tools.Items.Add(new ToolStripLabel("Live-Ereignisse und Verlauf des markierten Auftrags"));
+        tools.Items.Add(new ToolStripLabel("Versuche und Ereignisse des markierten Auftrags"));
         tools.Items.Add(Button("Fortsetzungsbefehl kopieren", CopyResumeCommand));
-        return Page("Live & Verlauf", split, tools);
+        return Page("Historie", split, tools);
     }
 
     private TabPage BuildPoliciesPage()
@@ -144,8 +191,10 @@ public sealed class MainForm : Form
         panel.Controls.Add(new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold), Text = "Laufzeit- und Provider-Einstellungen" });
         panel.Controls.Add(new Label { AutoSize = true, MaximumSize = new Size(900, 0), Text =
             "Änderungen werden validiert und sicher für den nächsten Anwendungsstart gespeichert. Zugangsdaten werden hier bewusst nicht abgelegt." });
-        var poll = Field(panel, "Scheduler-Polling (hh:mm:ss)", "00:00:10");
-        var timeout = Field(panel, "Auftrags-Timeout (hh:mm:ss)", "02:00:00");
+        var poll = Field(panel, "Scheduler-Polling (hh:mm:ss)", schedulerOptions.PollInterval.ToString("c"));
+        var timeout = Field(panel, "Auftrags-Timeout (hh:mm:ss)", schedulerOptions.ExecutionTimeout.ToString("c"));
+        var usageHistoryInterval = Field(panel, "Usage-Ereignisse in Historie (hh:mm:ss)",
+            schedulerOptions.HistoryUsageEventInterval.ToString("c"));
         var regex = Field(panel, "Claude Usage-RegEx", @"Current session:\s*(?<used>\d+)%\s*used", 720);
         var sample = Field(panel, "RegEx-Testausgabe", "Current session: 42% used", 720);
         var appServer = Field(panel, "Codex App-Server-Argumente (JSON)", "[\"app-server\",\"--listen\",\"stdio://\"]", 720);
@@ -154,6 +203,8 @@ public sealed class MainForm : Form
         {
             if (!TimeSpan.TryParse(poll.Text, out var p) || p <= TimeSpan.Zero) throw new InvalidOperationException("Das Polling-Intervall ist ungültig.");
             if (!TimeSpan.TryParse(timeout.Text, out var t) || t <= TimeSpan.Zero) throw new InvalidOperationException("Das Auftrags-Timeout ist ungültig.");
+            if (!TimeSpan.TryParse(usageHistoryInterval.Text, out var h) || h <= TimeSpan.Zero)
+                throw new InvalidOperationException("Der Mindestabstand für Usage-Ereignisse ist ungültig.");
             SchedulerUiService.ValidateRegex(regex.Text);
             if (!System.Text.RegularExpressions.Regex.IsMatch(sample.Text, regex.Text,
                     System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500)))
@@ -162,8 +213,11 @@ public sealed class MainForm : Form
                 ?? throw new InvalidOperationException("Die App-Server-Argumente sind kein gültiges JSON-Array.");
             await ui.SaveSettingAsync("Scheduler.PollInterval", p.ToString("c"));
             await ui.SaveSettingAsync("Scheduler.ExecutionTimeout", t.ToString("c"));
+            await ui.SaveSettingAsync("Scheduler.HistoryUsageEventInterval", h.ToString("c"));
             await ui.SaveSettingAsync("Claude.Usage.Pattern", regex.Text);
             await ui.SaveSettingAsync("Codex.AppServerArguments", appServer.Text);
+            schedulerOptions.HistoryUsageEventInterval = h;
+            await LoadHistoryAsync();
             MessageBox.Show(this, "Die gültigen Einstellungen wurden gespeichert und gelten nach dem nächsten Start.", "Einstellungen");
         });
         panel.Controls.Add(save); var page = new TabPage("Einstellungen"); page.Controls.Add(panel); return page;
@@ -176,10 +230,15 @@ public sealed class MainForm : Form
         {
             data = await ui.LoadAsync(providerRefresh);
             if (IsDisposed) return;
-            ApplyQueueRows(); ApplyPlatformRows(); ApplyBlockRows(); ApplyPolicyRows();
-            workerState.Text = scheduler.IsPaused ? "Verarbeitung: pausiert" : "Verarbeitung: aktiv";
+            ApplyQueueRows(); ApplyProjectRows(); ApplyPlatformRows(); ApplyBlockRows(); ApplyPolicyRows();
+            UpdateSchedulerPauseUi();
+            var usage = data.Platforms
+                .Where(x => x.Definition.Enabled && x.Definition.ShowUsageInStatusBar)
+                .Select(x => $"{x.Definition.Id.Value}: {UsageStatusFormatter.Format(x.Usage, DateTimeOffset.UtcNow)}")
+                .ToList();
+            usageState.Visible = usage.Count > 0;
+            usageState.Text = string.Join("  |  ", usage);
             runningState.Text = $"Laufende Aufträge: {scheduler.RunningCount}";
-            tray.Text = $"KIScheduler – {scheduler.RunningCount} laufend";
         }
         catch (Exception exception) { workerState.Text = $"Aktualisierung fehlgeschlagen: {exception.Message}"; }
         finally { refreshGate.Release(); }
@@ -187,17 +246,37 @@ public sealed class MainForm : Form
 
     private void ApplyQueueRows()
     {
-        var selected = SelectedItem()?.Id; queue.Rows.Clear(); if (data is null) return;
-        var term = filter.Text.Trim(); var status = statusFilter.SelectedIndex <= 0 ? null : statusFilter.SelectedItem?.ToString();
-        foreach (var row in data.Queue.Where(x => (status is null || x.Status == status) &&
-            (term.Length == 0 || $"{x.Item.Title} {x.Project} {x.Reason}".Contains(term, StringComparison.CurrentCultureIgnoreCase))))
+        var selected = SelectedItem()?.Id;
+        var firstDisplayedRow = queue.Rows.Count == 0 ? -1 : queue.FirstDisplayedScrollingRowIndex;
+        DataGridViewRow? selectedRow = null;
+        restoringQueueSelection = true;
+        try
         {
-            var index = queue.Rows.Add(row.Item.Priority.Value, row.Item.PlatformId.Value, row.Item.ModelId.Value,
-                row.Item.Effort.Value, row.Project, row.Usage, row.Status, row.Item.Title, row.Reason);
-            queue.Rows[index].Tag = row.Item; if (row.Item.Id == selected) queue.Rows[index].Selected = true;
-            if (row.Item.Status == WorkItemStatus.WartetAufUsage || row.Status == WorkItemDisplayStatus.ProjektAngehalten.ToString())
-                queue.Rows[index].DefaultCellStyle.BackColor = Color.MistyRose;
+            queue.Rows.Clear(); if (data is null) return;
+            var term = filter.Text.Trim();
+            var status = statusFilter.SelectedIndex <= 0 ? null : statusFilter.SelectedItem?.ToString();
+            foreach (var row in data.Queue.Where(x => (status is null || x.Status == status) &&
+                (term.Length == 0 || $"{x.Item.Title} {x.Project} {x.Reason}".Contains(term, StringComparison.CurrentCultureIgnoreCase))))
+            {
+                var index = queue.Rows.Add(row.Item.Priority.Value, row.Item.PlatformId.Value, row.Item.ModelId.Value,
+                    row.Item.Effort.Value, row.Project, row.Usage, row.Status, row.Item.Title, row.Reason);
+                queue.Rows[index].Tag = row.Item;
+                if (row.Item.Id == selected) selectedRow = queue.Rows[index];
+                if (row.Item.Status == WorkItemStatus.WartetAufUsage
+                    || row.Status == WorkItemDisplayStatus.ProjektAngehalten.ToString())
+                    queue.Rows[index].DefaultCellStyle.BackColor = Color.MistyRose;
+            }
+            if (selectedRow is not null)
+            {
+                queue.ClearSelection();
+                queue.CurrentCell = selectedRow.Cells[0];
+                selectedRow.Selected = true;
+            }
+            RestoreScrollPosition(queue, firstDisplayedRow);
         }
+        finally { restoringQueueSelection = false; }
+        UpdateQueueActionStates();
+        _ = LoadHistoryAsync();
     }
 
     private void ApplyPlatformRows()
@@ -209,10 +288,25 @@ public sealed class MainForm : Form
             var usage = row.Usage is null ? "Usage unbekannt" : string.Join(" | ", row.Usage.Windows.Select(x =>
                 $"{x.Name}: {x.UsedPercent}; Reset: {(x.ResetAtUtc?.ToLocalTime().ToString("g") ?? "unbekannt")}; Limitstatus: {x.RateLimitReachedType ?? "—"}"));
             if (!string.IsNullOrWhiteSpace(row.UsageMessage)) usage += $" — {row.UsageMessage}";
-            var index = platformGrid.Rows.Add(row.Definition.Id.Value, row.Health.Status, row.Health.Message ?? "", usage, row.EffectiveLimits);
+            var health = row.Definition.Enabled ? row.Health.Status.ToString() : "Deaktiviert";
+            var index = platformGrid.Rows.Add(row.Definition.Id.Value, row.Definition.Enabled ? "Ja" : "Nein",
+                row.Definition.ShowUsageInStatusBar ? "Ja" : "Nein", health, row.Health.Message ?? "", usage,
+                row.EffectiveLimits);
             platformGrid.Rows[index].Tag = row.Definition;
             if (row.Definition.Id.Value.Equals(selected, StringComparison.OrdinalIgnoreCase))
                 platformGrid.CurrentCell = platformGrid.Rows[index].Cells[0];
+        }
+    }
+
+    private void ApplyProjectRows()
+    {
+        var selected = (projectGrid.CurrentRow?.Tag as ProjectDefinition)?.Id;
+        projectGrid.Rows.Clear(); if (data is null) return;
+        foreach (var project in data.Projects.Values.OrderBy(x => x.Name))
+        {
+            var index = projectGrid.Rows.Add(project.Name, project.RootPath, project.TargetBranch);
+            projectGrid.Rows[index].Tag = project;
+            if (project.Id == selected) projectGrid.CurrentCell = projectGrid.Rows[index].Cells[0];
         }
     }
 
@@ -227,37 +321,139 @@ public sealed class MainForm : Form
 
     private void ApplyPolicyRows()
     {
+        PolicySelectionKey? selected = policyGrid.CurrentRow?.Tag is UsagePolicy policy
+            ? PolicyIdentity(policy) : null;
+        var firstDisplayedRow = policyGrid.Rows.Count == 0 ? -1 : policyGrid.FirstDisplayedScrollingRowIndex;
+        DataGridViewRow? selectedRow = null;
         policyGrid.Rows.Clear(); if (data is null) return;
         foreach (var p in data.Policies)
-        { var sprint = p.EndSprintDuration.HasValue ? $"{p.EndSprintDuration:g} → {p.EndSprintMaxUsedPercent}" : "—"; var i = policyGrid.Rows.Add(p.PlatformId.Value, p.ModelId?.Value ?? "alle", string.Join(", ", p.Days.Select(x => x.ToString()[..2])), $"{p.LocalStart:HH:mm}–{p.LocalEnd:HH:mm}", p.MaxUsedPercent, sprint, p.UnknownUsageBehavior, p.RefreshInterval, p.TimeZoneId); policyGrid.Rows[i].Tag = p; }
+        { var sprint = p.EndSprintDuration.HasValue ? $"{p.EndSprintDuration:g} → {p.EndSprintMaxUsedPercent}" : "—"; var i = policyGrid.Rows.Add(p.PlatformId.Value, p.ModelId?.Value ?? "alle", string.Join(", ", p.Days.Select(x => x.ToString()[..2])), $"{p.LocalStart:HH:mm}–{p.LocalEnd:HH:mm}", p.MaxUsedPercent, sprint, p.UnknownUsageBehavior, p.RefreshInterval, p.TimeZoneId); policyGrid.Rows[i].Tag = p; if (PolicyIdentity(p) == selected) selectedRow = policyGrid.Rows[i]; }
+        if (selectedRow is not null)
+        {
+            policyGrid.ClearSelection();
+            policyGrid.CurrentCell = selectedRow.Cells[0];
+            selectedRow.Selected = true;
+        }
+        RestoreScrollPosition(policyGrid, firstDisplayedRow);
     }
 
     private async Task LoadHistoryAsync()
     {
-        var item = SelectedItem(); attemptsGrid.Rows.Clear(); eventsGrid.Rows.Clear(); if (item is null) return;
-        try { var result = await ui.GetHistoryAsync(item.Id); foreach (var x in result.Attempts) attemptsGrid.Rows.Add(x.SequenceNumber, x.StartedAtUtc.ToLocalTime().ToString("g"), x.CompletedAtUtc.ToLocalTime().ToString("g"), x.Result, x.ExitCode, x.SessionId, x.Diagnostic); foreach (var x in result.Events.Reverse()) eventsGrid.Rows.Add(x.OccurredAtUtc.ToLocalTime().ToString("g"), x.Severity, x.EventType, x.Message); }
+        var version = ++historyLoadVersion;
+        var item = SelectedItem();
+        if (item is null)
+        {
+            attemptsGrid.Rows.Clear(); eventsGrid.Rows.Clear(); historyButton.Enabled = false; return;
+        }
+        try
+        {
+            ExecutionAttemptId? selectedAttemptId = attemptsGrid.CurrentRow?.Tag is ExecutionAttempt attempt
+                ? attempt.Id : null;
+            var selectedEventId = eventsGrid.CurrentRow?.Tag is ExecutionEvent executionEvent
+                ? executionEvent.Id : (Guid?)null;
+            var firstDisplayedAttempt = attemptsGrid.Rows.Count == 0 ? -1
+                : attemptsGrid.FirstDisplayedScrollingRowIndex;
+            var firstDisplayedEvent = eventsGrid.Rows.Count == 0 ? -1
+                : eventsGrid.FirstDisplayedScrollingRowIndex;
+            var result = await ui.GetHistoryAsync(item.Id);
+            if (version != historyLoadVersion || SelectedItem()?.Id != item.Id) return;
+            attemptsGrid.Rows.Clear(); eventsGrid.Rows.Clear();
+            DataGridViewRow? selectedAttemptRow = null;
+            foreach (var x in result.Attempts)
+            {
+                var index = attemptsGrid.Rows.Add(x.SequenceNumber, x.StartedAtUtc.ToLocalTime().ToString("g"),
+                    x.CompletedAtUtc.ToLocalTime().ToString("g"), x.Result, x.ExitCode, x.SessionId, x.Diagnostic);
+                attemptsGrid.Rows[index].Tag = x;
+                if (x.Id == selectedAttemptId) selectedAttemptRow = attemptsGrid.Rows[index];
+            }
+            DataGridViewRow? selectedEventRow = null;
+            var visibleEvents = HistoryEventFilter.ThrottleUsageEvents(result.Events,
+                schedulerOptions.HistoryUsageEventInterval);
+            foreach (var x in visibleEvents.Reverse())
+            {
+                var index = eventsGrid.Rows.Add(x.OccurredAtUtc.ToLocalTime().ToString("g"), x.Severity,
+                    x.EventType, x.Message);
+                eventsGrid.Rows[index].Tag = x;
+                if (x.Id == selectedEventId) selectedEventRow = eventsGrid.Rows[index];
+            }
+            RestoreGridSelection(attemptsGrid, selectedAttemptRow, firstDisplayedAttempt);
+            RestoreGridSelection(eventsGrid, selectedEventRow, firstDisplayedEvent);
+            historyButton.Enabled = result.Attempts.Count > 0 || result.Events.Count > 0;
+        }
         catch (Exception exception) { workerState.Text = exception.Message; }
     }
 
-    private async Task EditWorkItemAsync(WorkItem? item)
+    private async Task ShowSelectedHistoryAsync()
     {
-        if (data is null) return; using var dialog = new WorkItemDialog(data.Platforms.Select(x => x.Definition).ToList(), item, data.Projects);
+        await LoadHistoryAsync();
+        if (historyButton.Enabled) tabs.SelectedTab = historyPage;
+    }
+
+    private async Task EditWorkItemAsync(WorkItem? item, bool duplicate = false)
+    {
+        if (data is null) return;
+        var selectablePlatforms = data.Platforms.Select(x => x.Definition)
+            .Where(x => x.Enabled || (!duplicate && item is not null
+                && string.Equals(x.Id.Value, item.PlatformId.Value, StringComparison.OrdinalIgnoreCase))).ToList();
+        using var dialog = new WorkItemDialog(selectablePlatforms, item, data.Projects, duplicate);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        await UiAction(async () => { try { await ui.SaveWorkItemAsync(dialog.Value, item); } catch (ProjectRootRequiredException exception) { using var folder = new FolderBrowserDialog { Description = exception.Message, UseDescriptionForTitle = true }; if (folder.ShowDialog(this) != DialogResult.OK) return; if (MessageBox.Show(this, $"'{folder.SelectedPath}' wirklich als Projektroot verwenden?", "Projektroot bestätigen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; await ui.SaveWorkItemAsync(dialog.Value with { ConfirmedProjectRoot = folder.SelectedPath }, item); } await RefreshAsync(); });
+        await UiAction(async () =>
+        {
+            await ui.SaveWorkItemAsync(dialog.Value, duplicate ? null : item);
+            await RefreshAsync();
+        });
     }
 
     private Task EditSelectedAsync() => SelectedItem() is { } item ? EditWorkItemAsync(item) : Task.CompletedTask;
+    private Task DuplicateSelectedAsync() => SelectedItem() is { } item
+        ? EditWorkItemAsync(item, duplicate: true) : Task.CompletedTask;
     private async Task ChangePriorityAsync(int delta)
-    { var item = SelectedItem(); if (item is null || data is null) return; var project = item.ProjectId is { } id && data.Projects.TryGetValue(id, out var p) ? p.RootPath : null; var prompt = project is null ? item.PromptPath.Value : Path.GetFullPath(item.PromptPath.Value, project); var model = new WorkItemEditModel(item.Title, Math.Clamp(item.Priority.Value + delta, 0, 100), item.PlatformId.Value, item.ModelId.Value, item.Effort.Value, prompt, item.AutoCommit, item.CommitMessage, project); await UiAction(async () => { await ui.SaveWorkItemAsync(model, item); await RefreshAsync(); }); }
+    { var item = SelectedItem(); if (item is null || data is null || !item.CanEdit) return; var projectRoot = item.ProjectId is { } id && data.Projects.TryGetValue(id, out var p) ? p.RootPath : null; var prompt = projectRoot is null ? item.PromptPath.Value : Path.GetFullPath(item.PromptPath.Value, projectRoot); var model = new WorkItemEditModel(item.Title, Math.Clamp(item.Priority.Value + delta, 0, 100), item.PlatformId.Value, item.ModelId.Value, item.Effort.Value, prompt, item.AutoCommit, item.CommitMessage, item.ProjectId); await UiAction(async () => { await ui.SaveWorkItemAsync(model, item); await RefreshAsync(); }); }
     private async Task ToggleItemPauseAsync() { var item = SelectedItem(); if (item is null) return; await UiAction(async () => { await ui.SetPausedAsync(item, item.Status != WorkItemStatus.Pausiert); await RefreshAsync(); }); }
     private async Task CancelSelectedAsync() { var item = SelectedItem(); if (item is null || MessageBox.Show(this, $"Auftrag '{item.Title}' kontrolliert abbrechen?", "Abbrechen bestätigen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; await UiAction(async () => { if (!await ui.CancelAsync(item)) throw new InvalidOperationException("Der Auftrag kann nicht abgebrochen werden."); await RefreshAsync(); }); }
     private async Task RequeueSelectedAsync() { var item = SelectedItem(); if (item is null) return; await UiAction(async () => { await ui.RequeueAsync(item); await RefreshAsync(); }); }
-    private void ToggleSchedulerPause() { if (scheduler.IsPaused) scheduler.Resume(); else scheduler.Pause(); workerState.Text = scheduler.IsPaused ? "Verarbeitung: pausiert" : "Verarbeitung: aktiv"; }
+    private void ToggleSchedulerPause()
+    {
+        if (scheduler.IsPaused) scheduler.Resume(); else scheduler.Pause();
+        UpdateSchedulerPauseUi();
+    }
+
+    private void UpdateSchedulerPauseUi()
+    {
+        var paused = scheduler.IsPaused;
+        workerState.Text = paused
+            ? "⏸ VERARBEITUNG PAUSIERT – laufende Aufträge laufen weiter"
+            : "Verarbeitung: aktiv";
+        workerState.BackColor = paused ? Color.Firebrick : Color.Honeydew;
+        workerState.ForeColor = paused ? Color.White : Color.DarkGreen;
+        schedulerPauseButton.Text = paused ? "Verarbeitung fortsetzen" : "Verarbeitung pausieren";
+        schedulerPauseButton.BackColor = paused ? Color.Firebrick : SystemColors.Control;
+        schedulerPauseButton.ForeColor = paused ? Color.White : SystemColors.ControlText;
+        schedulerPauseMenuItem.Text = paused ? "Verarbeitung fortsetzen" : "Verarbeitung pausieren";
+        tray.Text = paused ? "KIScheduler – Verarbeitung pausiert"
+            : $"KIScheduler – {scheduler.RunningCount} laufend";
+    }
 
     private async Task ReleaseSelectedHoldAsync()
     { if (blockGrid.CurrentRow?.Tag is not ProjectExecutionHold hold) { MessageBox.Show(this, "Bitte einen Projekt-Hold auswählen."); return; } if (MessageBox.Show(this, "Der Arbeitsbaum kann teilweise verändert sein. Haben Sie ihn geprüft und möchten Sie den Hold bewusst freigeben?", "Manuelle Freigabe", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; await UiAction(async () => { await ui.ReleaseHoldAsync(hold); await RefreshAsync(); }); }
     private async Task EditPlatformAsync() { if (platformGrid.CurrentRow?.Tag is not PlatformDefinition platform) return; using var dialog = new PlatformDialog(platform); if (dialog.ShowDialog(this) != DialogResult.OK) return; await UiAction(async () => { await ui.SavePlatformAsync(dialog.Value); await RefreshAsync(true); }); }
-    private async Task CreateProjectAsync() { using var dialog = new NewProjectDialog(); if (dialog.ShowDialog(this) != DialogResult.OK) return; await UiAction(async () => { var result = await ui.CreateProjectAsync(dialog.Value); if (!result.Succeeded) throw new InvalidOperationException(result.Message); MessageBox.Show(this, result.Message, "Projekt erstellt"); await RefreshAsync(); }); }
+    private Task CreateProjectAsync() => EditProjectAsync(null);
+    private async Task EditProjectAsync(ProjectDefinition? project)
+    {
+        using var dialog = new ProjectDialog(project);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        await UiAction(async () => { await ui.SaveProjectAsync(dialog.Value); await RefreshAsync(); });
+    }
+    private Task EditSelectedProjectAsync() => projectGrid.CurrentRow?.Tag is ProjectDefinition project
+        ? EditProjectAsync(project) : Task.CompletedTask;
+    private async Task DeleteSelectedProjectAsync()
+    {
+        if (projectGrid.CurrentRow?.Tag is not ProjectDefinition project) return;
+        if (MessageBox.Show(this,
+                $"Projekt '{project.Name}' aus KIScheduler löschen? Der Ordner und seine Dateien bleiben erhalten.",
+                "Projekt löschen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+        await UiAction(async () => { await ui.DeleteProjectAsync(project); await RefreshAsync(); });
+    }
     private async Task EditPolicyAsync(UsagePolicy? policy) { if (data is null) return; using var dialog = new UsagePolicyDialog(data.Platforms.Select(x => x.Definition).ToList(), policy); if (dialog.ShowDialog(this) != DialogResult.OK) return; var values = data.Policies.ToList(); if (policy is not null) values.Remove(policy); values.Add(dialog.Value); await UiAction(async () => { await ui.SavePoliciesAsync(values); await RefreshAsync(); }); }
     private Task EditSelectedPolicyAsync() => policyGrid.CurrentRow?.Tag is UsagePolicy p ? EditPolicyAsync(p) : Task.CompletedTask;
     private async Task RemoveSelectedPolicyAsync() { if (data is null || policyGrid.CurrentRow?.Tag is not UsagePolicy p) return; await UiAction(async () => { await ui.SavePoliciesAsync(data.Policies.Where(x => !ReferenceEquals(x, p)).ToList()); await RefreshAsync(); }); }
@@ -267,7 +463,7 @@ public sealed class MainForm : Form
 
     private void ConfigureTray()
     {
-        var menu = new ContextMenuStrip(); menu.Items.Add("Öffnen", null, (_, _) => RestoreFromTray()); menu.Items.Add("Verarbeitung pausieren/fortsetzen", null, (_, _) => ToggleSchedulerPause()); var running = new ToolStripMenuItem("Laufende Aufträge"); menu.Items.Add(running);
+        var menu = new ContextMenuStrip(); menu.Items.Add("Öffnen", null, (_, _) => RestoreFromTray()); schedulerPauseMenuItem.Click += (_, _) => ToggleSchedulerPause(); menu.Items.Add(schedulerPauseMenuItem); var running = new ToolStripMenuItem("Laufende Aufträge"); menu.Items.Add(running);
         menu.Opening += (_, _) => { running.DropDownItems.Clear(); var items = data?.Queue.Where(x => x.Item.Status is WorkItemStatus.Reserviert or WorkItemStatus.InBearbeitung).ToList() ?? []; if (items.Count == 0) running.DropDownItems.Add("Keine").Enabled = false; foreach (var x in items) running.DropDownItems.Add($"{x.Item.PlatformId}: {x.Item.Title}").Enabled = false; };
         menu.Items.Add(new ToolStripSeparator()); menu.Items.Add("Beenden", null, async (_, _) => await ExitAsync()); tray.ContextMenuStrip = menu; tray.DoubleClick += (_, _) => RestoreFromTray();
     }
@@ -277,7 +473,43 @@ public sealed class MainForm : Form
     private async Task ExitAsync() { if (scheduler.RunningCount > 0 && MessageBox.Show(this, $"{scheduler.RunningCount} Auftrag/Aufträge laufen. Beim Beenden werden die Prozessbäume kontrolliert beendet. Fortfahren?", "KIScheduler beenden", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; allowClose = true; refreshTimer.Stop(); Enabled = false; using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(35)); try { await scheduler.StopAsync(timeout.Token); } catch (OperationCanceledException) { MessageBox.Show(this, "Die Prozesse konnten nicht rechtzeitig beendet werden.", "Beenden", MessageBoxButtons.OK, MessageBoxIcon.Error); allowClose = false; Enabled = true; refreshTimer.Start(); return; } tray.Visible = false; Close(); }
 
     private WorkItem? SelectedItem() => queue.CurrentRow?.Tag as WorkItem;
+    private void UpdateQueueActionStates()
+    {
+        var item = SelectedItem();
+        var canChangePriority = item?.CanEdit == true;
+        priorityIncreaseButton.Enabled = canChangePriority;
+        priorityDecreaseButton.Enabled = canChangePriority;
+        itemPauseButton.Enabled = item is not null && (item.Status == WorkItemStatus.Pausiert
+            ? WorkItemStateMachine.CanTransition(item.Status, WorkItemStatus.InWarteschlange)
+            : WorkItemStateMachine.CanTransition(item.Status, WorkItemStatus.Pausiert));
+        cancelButton.Enabled = item is not null
+            && WorkItemStateMachine.CanTransition(item.Status, WorkItemStatus.Abgebrochen);
+        requeueButton.Enabled = item?.Status is WorkItemStatus.TechnischErfolgreich
+            or WorkItemStatus.ErfolgreichMitWarnung or WorkItemStatus.Fehlgeschlagen
+            or WorkItemStatus.Abgebrochen;
+    }
     private string WorkItemName(WorkItemId id) => data?.Queue.FirstOrDefault(x => x.Item.Id == id)?.Item.Title ?? id.ToString();
+    private static PolicySelectionKey PolicyIdentity(UsagePolicy policy) => new(
+        policy.PlatformId.Value, policy.ModelId?.Value, policy.Days.Aggregate(0, (mask, day) => mask | 1 << (int)day),
+        policy.LocalStart.Ticks, policy.LocalEnd.Ticks, policy.TimeZoneId, policy.MaxUsedPercent.Value,
+        policy.UnknownUsageBehavior, policy.RefreshInterval.Ticks, policy.EndSprintDuration?.Ticks,
+        policy.EndSprintMaxUsedPercent?.Value);
+    private static void RestoreScrollPosition(DataGridView grid, int rowIndex)
+    {
+        if (rowIndex >= 0 && rowIndex < grid.Rows.Count && grid.Rows[rowIndex].Visible)
+            grid.FirstDisplayedScrollingRowIndex = rowIndex;
+    }
+    private static void RestoreGridSelection(DataGridView grid, DataGridViewRow? selectedRow,
+        int firstDisplayedRow)
+    {
+        if (selectedRow is not null)
+        {
+            grid.ClearSelection();
+            grid.CurrentCell = selectedRow.Cells[0];
+            selectedRow.Selected = true;
+        }
+        RestoreScrollPosition(grid, firstDisplayedRow);
+    }
     private async Task UiAction(Func<Task> action) { try { await action(); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "KIScheduler", MessageBoxButtons.OK, MessageBoxIcon.Error); } }
     private static ToolStripButton Button(string text, Action action) { var b = new ToolStripButton(text); b.Click += (_, _) => action(); return b; }
     private static ToolStripButton Button(string text, Func<Task> action) { var b = new ToolStripButton(text); b.Click += async (_, _) => await action(); return b; }
@@ -285,4 +517,9 @@ public sealed class MainForm : Form
     private static DataGridView Grid() => new() { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false, AutoGenerateColumns = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect, MultiSelect = false, RowHeadersVisible = false, AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.DisplayedCellsExceptHeaders };
     private static DataGridViewTextBoxColumn TextColumn(string title, string name, int width) => new() { HeaderText = title, Name = name, Width = width, SortMode = DataGridViewColumnSortMode.Automatic };
     private static TextBox Field(Control parent, string label, string value, int width = 300) { parent.Controls.Add(new Label { Text = label, AutoSize = true, Margin = new Padding(3, 14, 3, 2) }); var box = new TextBox { Text = value, Width = width }; parent.Controls.Add(box); return box; }
+
+    private readonly record struct PolicySelectionKey(string PlatformId, string? ModelId, int Days,
+        long LocalStartTicks, long LocalEndTicks, string TimeZoneId, decimal MaxUsedPercent,
+        UnknownUsageBehavior UnknownUsageBehavior, long RefreshIntervalTicks, long? EndSprintDurationTicks,
+        decimal? EndSprintMaxUsedPercent);
 }
