@@ -11,13 +11,14 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Data.Sqlite;
 using System.Text.Json;
+using KIScheduler.Infrastructure;
 
 namespace KIScheduler.WinForms;
 
 internal static class Program
 {
     [STAThread]
-    private static void Main(string[] args)
+    private static int Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
 
@@ -31,7 +32,13 @@ internal static class Program
             MessageBox.Show("KIScheduler verwendet diese Datenbank bereits in einer anderen Instanz. " +
                 "Die zweite Instanz wird beendet, damit kein Auftrag doppelt ausgeführt wird.\r\n\r\n" +
                 exception.LockPath, "KIScheduler bereits aktiv", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
+            return 2;
+        }
+
+        if (args.Contains("--startup-check", StringComparer.OrdinalIgnoreCase))
+        {
+            host.StopAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
+            return 0;
         }
 
         try
@@ -42,6 +49,7 @@ internal static class Program
         {
             host.StopAsync(TimeSpan.FromSeconds(5)).GetAwaiter().GetResult();
         }
+        return 0;
     }
 
     private static IHostBuilder CreateHostBuilder(string[] args) =>
@@ -51,20 +59,29 @@ internal static class Program
             {
                 configuration.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
                 AddPersistedSettings(configuration);
+                configuration.AddEnvironmentVariables("KISCHEDULER_");
+                configuration.AddCommandLine(args);
             })
             .ConfigureLogging((context, logging) =>
             {
+                var paths = RuntimePaths.FromConfiguration(context.Configuration, context.HostingEnvironment.ContentRootPath);
                 logging.ClearProviders();
                 logging.AddDebug();
-                logging.AddProvider(new RollingFileLoggerProvider(
-                    RollingFileLoggerOptions.FromConfiguration(context.Configuration),
-                    context.HostingEnvironment.ContentRootPath));
+                var configuredLogOptions = RollingFileLoggerOptions.FromConfiguration(context.Configuration);
+                var logOptions = new RollingFileLoggerOptions
+                {
+                    Directory = paths.LogDirectory,
+                    FileNamePrefix = configuredLogOptions.FileNamePrefix,
+                    RetainedFileCountLimit = configuredLogOptions.RetainedFileCountLimit
+                };
+                logging.AddProvider(new RollingFileLoggerProvider(logOptions, paths.DataDirectory));
             })
             .ConfigureServices((context, services) =>
             {
+                var paths = RuntimePaths.FromConfiguration(context.Configuration, context.HostingEnvironment.ContentRootPath);
                 services.AddKischedulerPersistence(
                     context.Configuration,
-                    context.HostingEnvironment.ContentRootPath);
+                    paths.DataDirectory);
                 services.AddKischedulerProcessRunner();
                 services.AddKischedulerGit();
                 services.AddKischedulerProjectServices();
@@ -87,9 +104,7 @@ internal static class Program
         try
         {
             var current = configuration.Build();
-            var configuredPath = current["Persistence:DatabasePath"];
-            var databasePath = Path.GetFullPath(string.IsNullOrWhiteSpace(configuredPath)
-                ? Path.Combine("data", "kischeduler.db") : configuredPath, AppContext.BaseDirectory);
+            var databasePath = RuntimePaths.FromConfiguration(current, AppContext.BaseDirectory).DatabasePath;
             if (!File.Exists(databasePath)) return;
             using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
             { DataSource = databasePath, Mode = SqliteOpenMode.ReadOnly }.ToString());

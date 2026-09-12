@@ -21,7 +21,22 @@ Die Anwendung lässt sich anschließend mit folgendem Befehl starten:
 dotnet run --project src/KIScheduler.WinForms/KIScheduler.WinForms.csproj
 ```
 
-Nicht geheime Einstellungen liegen in `src/KIScheduler.WinForms/appsettings.json`. Laufzeitprotokolle werden standardmäßig täglich unter `logs/` neben der Anwendung abgelegt und nach der konfigurierten Anzahl von Tagen bereinigt.
+Nicht geheime Einstellungen liegen in `src/KIScheduler.WinForms/appsettings.json`. Veränderliche Daten
+liegen standardmäßig ohne Administratorrechte unter `%LOCALAPPDATA%\KIScheduler`; ein portabler Modus
+ist konfigurierbar. Details zu Erstkonfiguration, Fehlerdiagnose, Pfaden und Backup stehen im
+[Benutzerhandbuch](docs/USER_GUIDE.md).
+
+## Veröffentlichen
+
+Die erste Version wird framework-abhängig für Windows x64 ausgeliefert und benötigt die .NET 8 Desktop
+Runtime x64. Ein geprüftes Release-Paket wird reproduzierbar erzeugt mit:
+
+```powershell
+.\scripts\Publish-Release.ps1
+```
+
+Ausgabe: `artifacts\publish\win-x64`. Die manuellen Abnahmeschritte für echte Codex-/Claude-CLIs,
+Tray-Betrieb und Restore sind in der [Release-Checkliste](docs/RELEASE_CHECKLIST.md) festgehalten.
 
 ## Wiederanlauf und menschliche Prüfung
 

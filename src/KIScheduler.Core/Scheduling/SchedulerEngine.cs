@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
-using System.Text.RegularExpressions;
 using KIScheduler.Core.Contracts;
 using KIScheduler.Core.Domain;
+using KIScheduler.Core.Security;
 
 namespace KIScheduler.Core.Scheduling;
 
@@ -428,7 +428,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
             {
                 await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
                     ExecutionEventSeverity.Information, $"platform.{platformEvent.Type}",
-                    RedactSensitiveOutput(platformEvent.Json), data: new Dictionary<string, string>
+                    SensitiveDataRedactor.Redact(platformEvent.Json), data: new Dictionary<string, string>
                     {
                         ["reasonCode"] = "platform.output",
                         ["stream"] = "structured"
@@ -445,7 +445,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
 
             var completedAt = clock.UtcNow;
             var attemptResult = MapResult(result, shutdown.IsCancellationRequested);
-            string? diagnostic = result.Message;
+            string? diagnostic = result.Message is null ? null : SensitiveDataRedactor.Redact(result.Message);
             GitCommitResult? commitResult = null;
             if (attemptResult == ExecutionAttemptResult.TechnischErfolgreich && item.AutoCommit)
             {
@@ -561,7 +561,8 @@ public sealed class SchedulerEngine : ISchedulerEngine
                     clock.UtcNow).ConfigureAwait(false);
             }
             await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
-                ExecutionEventSeverity.Error, "execution.preparation_failed", exception.Message, attempt?.Id,
+                ExecutionEventSeverity.Error, "execution.preparation_failed",
+                SensitiveDataRedactor.Redact(exception.Message), attempt?.Id,
                 new Dictionary<string, string> { ["reasonCode"] = "execution.preparation_failed" }),
                 CancellationToken.None).ConfigureAwait(false);
         }
@@ -574,7 +575,8 @@ public sealed class SchedulerEngine : ISchedulerEngine
     private async Task PersistUsageExceededAsync(WorkItem item, ExecutionAttempt attempt,
         PlatformExecutionResult result, DateTimeOffset now)
     {
-        var message = result.Message ?? "Usage-Limit während der Ausführung erreicht.";
+        var message = SensitiveDataRedactor.Redact(
+            result.Message ?? "Usage-Limit während der Ausführung erreicht.");
         var executionEvent = new ExecutionEvent(Guid.NewGuid(), item.Id, now, ExecutionEventSeverity.Error,
             "usage_exceeded", message, attempt.Id, new Dictionary<string, string>
             {
@@ -755,12 +757,4 @@ public sealed class SchedulerEngine : ISchedulerEngine
     private static bool PlatformEquals(PlatformId left, PlatformId right) =>
         string.Equals(left.Value, right.Value, StringComparison.OrdinalIgnoreCase);
 
-    private static string RedactSensitiveOutput(string value)
-    {
-        value = Regex.Replace(value,
-            "(?i)(\\\"?(?:authorization|access_token|api_key|secret|token)\\\"?\\s*[:=]\\s*\\\")[^\\\"]*(\\\")",
-            "$1<redacted>$2", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
-        return Regex.Replace(value, "(?i)Bearer\\s+[A-Za-z0-9._~+/-]+=*", "Bearer <redacted>",
-            RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
-    }
 }

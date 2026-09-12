@@ -1,4 +1,5 @@
 using System.Globalization;
+using KIScheduler.Core.Security;
 using Microsoft.Extensions.Logging;
 
 namespace KIScheduler.Infrastructure.Logging;
@@ -65,11 +66,11 @@ public sealed class RollingFileLoggerProvider : ILoggerProvider
             }
 
             _writer.Write(": ");
-            _writer.WriteLine(message);
+            _writer.WriteLine(SensitiveDataRedactor.Redact(message));
 
             if (exception is not null)
             {
-                _writer.WriteLine(exception);
+                _writer.WriteLine(SensitiveDataRedactor.Redact(exception.ToString()));
             }
 
             _writer.Flush();

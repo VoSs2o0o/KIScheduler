@@ -10,11 +10,11 @@ namespace KIScheduler.Infrastructure.Persistence;
 public static class PersistenceServiceCollectionExtensions
 {
     public static IServiceCollection AddKischedulerPersistence(this IServiceCollection services,
-        IConfiguration configuration, string contentRootPath)
+        IConfiguration configuration, string dataDirectory)
     {
         var configuredPath = configuration["Persistence:DatabasePath"];
         var databasePath = Path.GetFullPath(string.IsNullOrWhiteSpace(configuredPath)
-            ? Path.Combine("data", "kischeduler.db") : configuredPath, contentRootPath);
+            ? Path.Combine("data", "kischeduler.db") : configuredPath, dataDirectory);
         Directory.CreateDirectory(Path.GetDirectoryName(databasePath)!);
 
         var connectionString = new SqliteConnectionStringBuilder

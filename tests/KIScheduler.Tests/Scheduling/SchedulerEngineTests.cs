@@ -326,6 +326,88 @@ public sealed class SchedulerEngineTests
         Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
     }
 
+    [TestMethod]
+    public async Task ExecutionTimeoutMovesWorkToHumanReviewAndHoldsProject()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync(new SchedulerOptions
+        {
+            ExecutionTimeout = TimeSpan.FromMilliseconds(100),
+            LeaseDuration = TimeSpan.FromMinutes(1),
+            AgingInterval = TimeSpan.FromMinutes(1)
+        }, "codex");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("timeout"), 50,
+            autoCommit: false);
+        fixture.Platform("codex").EnqueueExecution(async (_, token) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return new(PlatformExecutionOutcome.Succeeded, 0);
+        });
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        Assert.AreEqual(WorkItemStatus.MenschlichePruefung, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+        Assert.AreEqual(ExecutionAttemptResult.MenschlichePruefung,
+            (await fixture.History.ListAttemptsAsync(item.Id)).Single().Result);
+        Assert.AreEqual(item.Id, (await fixture.Blocks.ListActiveProjectHoldsAsync()).Single().TriggeringWorkItemId);
+    }
+
+    [TestMethod]
+    public async Task EndSprintAllowsBelowHundredButExactHundredStillWaits()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var allowed = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("end-sprint"), 60,
+            autoCommit: false);
+        fixture.SetUsage("codex", 99, TimeSpan.FromMinutes(15));
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+        Assert.AreEqual(WorkItemStatus.TechnischErfolgreich, (await fixture.WorkItems.GetAsync(allowed.Id))!.Status);
+
+        var blocked = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("at-one-hundred"), 50,
+            autoCommit: false);
+        fixture.SetUsage("codex", 100, TimeSpan.FromMinutes(1));
+
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
+        Assert.AreEqual(WorkItemStatus.WartetAufUsage, (await fixture.WorkItems.GetAsync(blocked.Id))!.Status);
+    }
+
+    [TestMethod]
+    public async Task ServerLimitBelowHundredBlocksDispatch()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("server-limit"), 50,
+            autoCommit: false);
+        fixture.SetUsage("codex", 1, TimeSpan.FromMinutes(15), "hard_limit");
+
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
+
+        Assert.AreEqual(0, fixture.Platform("codex").Requests.Count);
+        Assert.AreEqual(WorkItemStatus.WartetAufUsage, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+        Assert.IsTrue((await fixture.History.ListEventsAsync(item.Id))
+            .Any(x => x.Data.GetValueOrDefault("reasonCode") == SchedulerReasonCodes.ServerLimitReached));
+    }
+
+    [TestMethod]
+    public async Task SensitivePlatformDiagnosticsAreRedactedBeforePersistence()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("redaction"), 50,
+            autoCommit: false);
+        fixture.Platform("codex").EnqueueResult(new(PlatformExecutionOutcome.Failed, 2,
+            message: "Authorization: Bearer persisted-secret"));
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        var attempt = (await fixture.History.ListAttemptsAsync(item.Id)).Single();
+        Assert.IsNotNull(attempt.Diagnostic);
+        Assert.IsFalse(attempt.Diagnostic.Contains("persisted-secret", StringComparison.Ordinal));
+        Assert.IsTrue((await fixture.History.ListEventsAsync(item.Id))
+            .Where(x => x.EventType == "execution.completed")
+            .All(x => !x.Message.Contains("persisted-secret", StringComparison.Ordinal)));
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -368,6 +450,10 @@ public sealed class SchedulerEngineTests
         public SqliteExecutionHistoryRepository History { get; }
 
         public static async Task<SchedulerFixture> CreateAsync(params string[] platformIds)
+            => await CreateAsync(null, platformIds);
+
+        public static async Task<SchedulerFixture> CreateAsync(SchedulerOptions? schedulerOptions,
+            params string[] platformIds)
         {
             var directory = Path.Combine(Path.GetTempPath(), $"kischeduler-ap6-{Guid.NewGuid():N}");
             Directory.CreateDirectory(directory);
@@ -406,7 +492,8 @@ public sealed class SchedulerEngineTests
             var engine = new SchedulerEngine(workItems, projects, platformRepository,
                 new SqliteUsagePolicyRepository(factory), snapshots, history, blocks, atomic,
                 aiRegistry, usageRegistry, new PlatformConfigurationValidator(aiRegistry, usageRegistry),
-                new PhysicalFileSystem(), git, clock, new SchedulerOptions { AgingInterval = TimeSpan.FromMinutes(1) },
+                new PhysicalFileSystem(), git, clock,
+                schedulerOptions ?? new SchedulerOptions { AgingInterval = TimeSpan.FromMinutes(1) },
                 ownerId: "test-worker");
             return new SchedulerFixture(databasePath, directory, platformMap, usageMap, factory, engine, clock, git);
         }
@@ -425,6 +512,11 @@ public sealed class SchedulerEngineTests
 
         public void SetUsage(string id, decimal used) => usageMap[id].SetCurrent(
             UsageReadResult.Available(CreateSnapshot(id, Clock.UtcNow, used)));
+
+        public void SetUsage(string id, decimal used, TimeSpan resetIn, string? rateLimitReachedType = null) =>
+            usageMap[id].SetCurrent(UsageReadResult.Available(new UsageSnapshot(new(id), Clock.UtcNow, "fake",
+                UsageQuality.Aktuell, [new UsageWindow("primary", new(used), Clock.UtcNow + resetIn, "fake",
+                    Clock.UtcNow, UsageQuality.Aktuell, rateLimitReachedType)])));
 
         public void SetUnknownUsage(string id) => usageMap[id].SetCurrent(UsageReadResult.Unknown("unbekannt"));
 

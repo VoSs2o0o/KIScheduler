@@ -256,6 +256,28 @@ public sealed class SqlitePersistenceTests
         Assert.IsTrue(second.TryAcquire());
     }
 
+    [TestMethod]
+    public async Task DatabaseMigrationIsIdempotentAndLeavesCurrentSchema()
+    {
+        await using (var firstStart = factory!.CreateDbContext())
+        {
+            await firstStart.Database.MigrateAsync();
+            Assert.AreEqual(0, (await firstStart.Database.GetPendingMigrationsAsync()).Count());
+        }
+
+        await using (var restarted = factory!.CreateDbContext())
+        {
+            await restarted.Database.MigrateAsync();
+            Assert.AreEqual(0, (await restarted.Database.GetPendingMigrationsAsync()).Count());
+            CollectionAssert.IsSubsetOf(new[]
+            {
+                "WorkItems", "Projects", "ExecutionAttempts", "ExecutionEvents", "PlatformUsageBlocks",
+                "ProjectExecutionHolds", "SchedulerLeases", "Settings"
+            }, (await restarted.Database.SqlQueryRaw<string>(
+                "SELECT name AS Value FROM sqlite_master WHERE type = 'table'").ToListAsync()).ToArray());
+        }
+    }
+
     private static WorkItem CreateQueuedWorkItem(ProjectId? projectId = null, string platformId = "codex")
     {
         var item = new WorkItem(WorkItemId.New(), "AP", new(50), new(platformId), new("gpt"), new("medium"),
