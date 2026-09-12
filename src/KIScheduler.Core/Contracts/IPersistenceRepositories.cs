@@ -71,3 +71,16 @@ public interface IAtomicExecutionRepository
     Task PersistUsageExceededAsync(UsageExceededPersistenceRequest request,
         CancellationToken cancellationToken = default);
 }
+
+public sealed record StartupRecoveryResult(
+    int InterruptedWorkItemCount,
+    int CreatedProjectHoldCount,
+    int RemovedLeaseCount);
+
+public interface IStartupRecoveryRepository
+{
+    Task<StartupRecoveryResult> RecoverInterruptedAsync(
+        DateTimeOffset detectedAtUtc,
+        string recoveryOwnerId,
+        CancellationToken cancellationToken = default);
+}

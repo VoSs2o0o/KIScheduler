@@ -29,12 +29,16 @@ public sealed class MainForm : Form
     private readonly ToolStripButton itemPauseButton = new() { Text = "Pausieren/Fortsetzen", Enabled = false };
     private readonly ToolStripButton cancelButton = new() { Text = "Abbrechen", Enabled = false };
     private readonly ToolStripButton requeueButton = new() { Text = "Erneut einreihen", Enabled = false };
+    private readonly ToolStripButton humanReviewButton = new() { Text = "Extern prüfen", Enabled = false };
     private readonly ToolStripButton historyButton = new() { Text = "Verlauf", Enabled = false };
     private readonly ToolStripButton schedulerPauseButton = new();
     private readonly ToolStripMenuItem schedulerPauseMenuItem = new();
     private readonly NotifyIcon tray = new() { Icon = SystemIcons.Application, Text = "KIScheduler", Visible = true };
     private readonly System.Windows.Forms.Timer refreshTimer = new() { Interval = 2500 };
     private readonly SemaphoreSlim refreshGate = new(1, 1);
+    private readonly TextBox reviewDetails = new() { ReadOnly = true, Multiline = true, Height = 118,
+        Dock = DockStyle.Top, ScrollBars = ScrollBars.Vertical, BackColor = SystemColors.Info };
+    private string? currentResumeCommand;
     private DashboardData? data;
     private bool allowClose;
     private bool restoringQueueSelection;
@@ -108,6 +112,8 @@ public sealed class MainForm : Form
         requeueButton.Click += async (_, _) => await RequeueSelectedAsync();
         tools.Items.Add(itemPauseButton);
         tools.Items.Add(cancelButton);
+        humanReviewButton.Click += async (_, _) => await MarkSelectedForHumanReviewAsync();
+        tools.Items.Add(humanReviewButton);
         tools.Items.Add(requeueButton);
         tools.Items.Add(new ToolStripSeparator());
         tools.Items.Add(Button("Usage aktualisieren", async () => await RefreshAsync(true)));
@@ -168,7 +174,7 @@ public sealed class MainForm : Form
         var tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
         tools.Items.Add(new ToolStripLabel("Versuche und Ereignisse des markierten Auftrags"));
         tools.Items.Add(Button("Fortsetzungsbefehl kopieren", CopyResumeCommand));
-        return Page("Historie", split, tools);
+        return Page("Historie", split, tools, reviewDetails);
     }
 
     private TabPage BuildPoliciesPage()
@@ -195,6 +201,10 @@ public sealed class MainForm : Form
         var timeout = Field(panel, "Auftrags-Timeout (hh:mm:ss)", schedulerOptions.ExecutionTimeout.ToString("c"));
         var usageHistoryInterval = Field(panel, "Usage-Ereignisse in Historie (hh:mm:ss)",
             schedulerOptions.HistoryUsageEventInterval.ToString("c"));
+        var maximumAttempts = Field(panel, "Maximale Versuche", schedulerOptions.MaximumAttempts.ToString());
+        var retryBackoff = Field(panel, "Retry-Backoff (hh:mm:ss)", schedulerOptions.RetryBackoff.ToString("c"));
+        var maximumRetryBackoff = Field(panel, "Maximaler Retry-Backoff (hh:mm:ss)",
+            schedulerOptions.MaximumRetryBackoff.ToString("c"));
         var regex = Field(panel, "Claude Usage-RegEx", @"Current session:\s*(?<used>\d+)%\s*used", 720);
         var sample = Field(panel, "RegEx-Testausgabe", "Current session: 42% used", 720);
         var appServer = Field(panel, "Codex App-Server-Argumente (JSON)", "[\"app-server\",\"--listen\",\"stdio://\"]", 720);
@@ -205,6 +215,12 @@ public sealed class MainForm : Form
             if (!TimeSpan.TryParse(timeout.Text, out var t) || t <= TimeSpan.Zero) throw new InvalidOperationException("Das Auftrags-Timeout ist ungültig.");
             if (!TimeSpan.TryParse(usageHistoryInterval.Text, out var h) || h <= TimeSpan.Zero)
                 throw new InvalidOperationException("Der Mindestabstand für Usage-Ereignisse ist ungültig.");
+            if (!int.TryParse(maximumAttempts.Text, out var attempts) || attempts <= 0)
+                throw new InvalidOperationException("Die maximale Versuchszahl muss größer als null sein.");
+            if (!TimeSpan.TryParse(retryBackoff.Text, out var backoff) || backoff <= TimeSpan.Zero)
+                throw new InvalidOperationException("Der Retry-Backoff ist ungültig.");
+            if (!TimeSpan.TryParse(maximumRetryBackoff.Text, out var maximumBackoff) || maximumBackoff < backoff)
+                throw new InvalidOperationException("Der maximale Retry-Backoff darf nicht kleiner als der Retry-Backoff sein.");
             SchedulerUiService.ValidateRegex(regex.Text);
             if (!System.Text.RegularExpressions.Regex.IsMatch(sample.Text, regex.Text,
                     System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500)))
@@ -214,6 +230,9 @@ public sealed class MainForm : Form
             await ui.SaveSettingAsync("Scheduler.PollInterval", p.ToString("c"));
             await ui.SaveSettingAsync("Scheduler.ExecutionTimeout", t.ToString("c"));
             await ui.SaveSettingAsync("Scheduler.HistoryUsageEventInterval", h.ToString("c"));
+            await ui.SaveSettingAsync("Scheduler.MaximumAttempts", attempts.ToString());
+            await ui.SaveSettingAsync("Scheduler.RetryBackoff", backoff.ToString("c"));
+            await ui.SaveSettingAsync("Scheduler.MaximumRetryBackoff", maximumBackoff.ToString("c"));
             await ui.SaveSettingAsync("Claude.Usage.Pattern", regex.Text);
             await ui.SaveSettingAsync("Codex.AppServerArguments", appServer.Text);
             schedulerOptions.HistoryUsageEventInterval = h;
@@ -343,7 +362,8 @@ public sealed class MainForm : Form
         var item = SelectedItem();
         if (item is null)
         {
-            attemptsGrid.Rows.Clear(); eventsGrid.Rows.Clear(); historyButton.Enabled = false; return;
+            attemptsGrid.Rows.Clear(); eventsGrid.Rows.Clear(); reviewDetails.Clear();
+            currentResumeCommand = null; historyButton.Enabled = false; return;
         }
         try
         {
@@ -356,6 +376,7 @@ public sealed class MainForm : Form
             var firstDisplayedEvent = eventsGrid.Rows.Count == 0 ? -1
                 : eventsGrid.FirstDisplayedScrollingRowIndex;
             var result = await ui.GetHistoryAsync(item.Id);
+            var review = await ui.GetHumanReviewDetailsAsync(item);
             if (version != historyLoadVersion || SelectedItem()?.Id != item.Id) return;
             attemptsGrid.Rows.Clear(); eventsGrid.Rows.Clear();
             DataGridViewRow? selectedAttemptRow = null;
@@ -379,6 +400,12 @@ public sealed class MainForm : Form
             RestoreGridSelection(attemptsGrid, selectedAttemptRow, firstDisplayedAttempt);
             RestoreGridSelection(eventsGrid, selectedEventRow, firstDisplayedEvent);
             historyButton.Enabled = result.Attempts.Count > 0 || result.Events.Count > 0;
+            currentResumeCommand = review?.ResumeCommand;
+            reviewDetails.Visible = review is not null;
+            reviewDetails.Text = review is null ? "" :
+                $"MENSCHLICHE PRÜFUNG\r\nPlattform/Modell: {review.Platform} / {review.Model}   Projekt: {review.Project}\r\n" +
+                $"Projektroot: {review.ProjectRoot ?? "—"}\r\nSitzung: {review.SessionId ?? "—"}   Logs: {review.LogReference}\r\n" +
+                $"Fehlergrund: {review.FailureReason}\r\nFortsetzungsbefehl: {review.ResumeCommand ?? "nicht sicher verfügbar"}";
         }
         catch (Exception exception) { workerState.Text = exception.Message; }
     }
@@ -411,7 +438,21 @@ public sealed class MainForm : Form
     { var item = SelectedItem(); if (item is null || data is null || !item.CanEdit) return; var projectRoot = item.ProjectId is { } id && data.Projects.TryGetValue(id, out var p) ? p.RootPath : null; var prompt = projectRoot is null ? item.PromptPath.Value : Path.GetFullPath(item.PromptPath.Value, projectRoot); var model = new WorkItemEditModel(item.Title, Math.Clamp(item.Priority.Value + delta, 0, 100), item.PlatformId.Value, item.ModelId.Value, item.Effort.Value, prompt, item.AutoCommit, item.CommitMessage, item.ProjectId); await UiAction(async () => { await ui.SaveWorkItemAsync(model, item); await RefreshAsync(); }); }
     private async Task ToggleItemPauseAsync() { var item = SelectedItem(); if (item is null) return; await UiAction(async () => { await ui.SetPausedAsync(item, item.Status != WorkItemStatus.Pausiert); await RefreshAsync(); }); }
     private async Task CancelSelectedAsync() { var item = SelectedItem(); if (item is null || MessageBox.Show(this, $"Auftrag '{item.Title}' kontrolliert abbrechen?", "Abbrechen bestätigen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; await UiAction(async () => { if (!await ui.CancelAsync(item)) throw new InvalidOperationException("Der Auftrag kann nicht abgebrochen werden."); await RefreshAsync(); }); }
-    private async Task RequeueSelectedAsync() { var item = SelectedItem(); if (item is null) return; await UiAction(async () => { await ui.RequeueAsync(item); await RefreshAsync(); }); }
+    private async Task RequeueSelectedAsync()
+    {
+        var item = SelectedItem(); if (item is null) return;
+        var itemHolds = data?.ProjectHolds.Where(x => x.TriggeringWorkItemId == item.Id).ToList() ?? [];
+        if (itemHolds.Count > 0 && MessageBox.Show(this,
+            "Für diesen Auftrag besteht ein Projekt-Hold. Haben Sie die externe Bearbeitung und den Arbeitsbaum geprüft und möchten Sie den Hold bewusst freigeben und den Auftrag neu einreihen?",
+            "Prüfung bestätigen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+        await UiAction(async () =>
+        {
+            foreach (var hold in itemHolds) await ui.ReleaseHoldAsync(hold);
+            await ui.RequeueAsync(item);
+            await RefreshAsync();
+        });
+    }
+    private async Task MarkSelectedForHumanReviewAsync() { var item = SelectedItem(); if (item is null) return; await UiAction(async () => { await ui.MarkForHumanReviewAsync(item); await RefreshAsync(); await ShowSelectedHistoryAsync(); }); }
     private void ToggleSchedulerPause()
     {
         if (scheduler.IsPaused) scheduler.Resume(); else scheduler.Pause();
@@ -459,7 +500,7 @@ public sealed class MainForm : Form
     private async Task RemoveSelectedPolicyAsync() { if (data is null || policyGrid.CurrentRow?.Tag is not UsagePolicy p) return; await UiAction(async () => { await ui.SavePoliciesAsync(data.Policies.Where(x => !ReferenceEquals(x, p)).ToList()); await RefreshAsync(); }); }
 
     private void CopyResumeCommand()
-    { if (attemptsGrid.SelectedRows.Count == 0) return; var session = attemptsGrid.SelectedRows[0].Cells[5].Value?.ToString(); var item = SelectedItem(); if (string.IsNullOrWhiteSpace(session) || item is null) return; Clipboard.SetText(item.PlatformId.Value.Equals("codex", StringComparison.OrdinalIgnoreCase) ? $"codex exec resume {session} -" : $"claude --resume {session}"); workerState.Text = "Fortsetzungsbefehl wurde kopiert."; }
+    { if (string.IsNullOrWhiteSpace(currentResumeCommand)) { MessageBox.Show(this, "Für diesen Auftrag ist kein sicherer Fortsetzungsbefehl verfügbar."); return; } Clipboard.SetText(currentResumeCommand); workerState.Text = "Fortsetzungsbefehl wurde kopiert; er wurde nicht ausgeführt."; }
 
     private void ConfigureTray()
     {
@@ -486,7 +527,10 @@ public sealed class MainForm : Form
             && WorkItemStateMachine.CanTransition(item.Status, WorkItemStatus.Abgebrochen);
         requeueButton.Enabled = item?.Status is WorkItemStatus.TechnischErfolgreich
             or WorkItemStatus.ErfolgreichMitWarnung or WorkItemStatus.Fehlgeschlagen
-            or WorkItemStatus.Abgebrochen;
+            or WorkItemStatus.Abgebrochen or WorkItemStatus.Unterbrochen
+            or WorkItemStatus.MenschlichePruefung;
+        humanReviewButton.Enabled = item is not null && (item.Status == WorkItemStatus.MenschlichePruefung
+            || WorkItemStateMachine.CanTransition(item.Status, WorkItemStatus.MenschlichePruefung));
     }
     private string WorkItemName(WorkItemId id) => data?.Queue.FirstOrDefault(x => x.Item.Id == id)?.Item.Title ?? id.ToString();
     private static PolicySelectionKey PolicyIdentity(UsagePolicy policy) => new(

@@ -195,6 +195,8 @@ public sealed class SchedulerEngineTests
         await fixture.Engine.StopAsync();
 
         Assert.AreEqual(WorkItemStatus.Unterbrochen, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+        var hold = (await fixture.Blocks.ListActiveProjectHoldsAsync()).Single();
+        Assert.AreEqual(item.Id, hold.TriggeringWorkItemId);
     }
 
     [TestMethod]
@@ -289,6 +291,39 @@ public sealed class SchedulerEngineTests
 
         Assert.AreEqual(WorkItemStatus.MenschlichePruefung, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
         Assert.AreEqual(1, fixture.Git.CommitRequests.Count);
+    }
+
+    [TestMethod]
+    public async Task FailedExecutionUsesBackoffAndStopsAtConfiguredMaximumAttempts()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("retry"), 50,
+            autoCommit: false);
+        for (var index = 0; index < 3; index++)
+            fixture.Platform("codex").EnqueueResult(new(PlatformExecutionOutcome.Failed, 2,
+                message: $"Fehler {index + 1}"));
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+        var afterFirst = (await fixture.WorkItems.GetAsync(item.Id))!;
+        Assert.AreEqual(WorkItemStatus.InWarteschlange, afterFirst.Status);
+        Assert.AreEqual(1, afterFirst.NormalRetryCount);
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync(), "Backoff muss einen sofortigen Retry verhindern.");
+
+        fixture.Clock.Advance(TimeSpan.FromMinutes(1));
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+        Assert.AreEqual(2, (await fixture.WorkItems.GetAsync(item.Id))!.NormalRetryCount);
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync(), "Der zweite Backoff muss exponentiell länger sein.");
+
+        fixture.Clock.Advance(TimeSpan.FromMinutes(2));
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+        var final = (await fixture.WorkItems.GetAsync(item.Id))!;
+        Assert.AreEqual(WorkItemStatus.Fehlgeschlagen, final.Status);
+        Assert.AreEqual(3, final.NormalRetryCount);
+        Assert.AreEqual(3, fixture.Platform("codex").Requests.Count);
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition)

@@ -204,6 +204,58 @@ public sealed class SqlitePersistenceTests
         Assert.AreEqual(1, (await blocks.ListActiveProjectHoldsAsync()).Count);
     }
 
+    [TestMethod]
+    public async Task StartupRecoveryInterruptsOrphanedExecutionAndCreatesDiagnosticHold()
+    {
+        var projects = new SqliteProjectRepository(factory!);
+        var workItems = new SqliteWorkItemRepository(factory!);
+        var history = new SqliteExecutionHistoryRepository(factory!);
+        var project = new ProjectDefinition(ProjectId.New(), "Recovery", Path.GetTempPath(), "master");
+        await projects.SaveAsync(project);
+        var item = CreateQueuedWorkItem(project.Id);
+        await workItems.SaveAsync(item);
+        var detectedAt = DateTimeOffset.UtcNow;
+        var lease = await workItems.TryAcquireLeaseAsync(item.Id, "crashed-worker",
+            detectedAt.AddMinutes(-2), TimeSpan.FromHours(1));
+        Assert.IsNotNull(lease);
+        item = (await workItems.GetAsync(item.Id))!;
+        item.TransitionTo(WorkItemStatus.InBearbeitung);
+        item.MarkAttemptStarted(detectedAt.AddMinutes(-1));
+        await workItems.SaveAsync(item);
+
+        var result = await new SqliteStartupRecoveryRepository(factory!)
+            .RecoverInterruptedAsync(detectedAt, "restart-worker");
+
+        Assert.AreEqual(1, result.InterruptedWorkItemCount);
+        Assert.AreEqual(1, result.CreatedProjectHoldCount);
+        Assert.AreEqual(1, result.RemovedLeaseCount);
+        Assert.AreEqual(WorkItemStatus.Unterbrochen, (await workItems.GetAsync(item.Id))!.Status);
+        var attempt = (await history.ListAttemptsAsync(item.Id)).Single();
+        Assert.AreEqual(ExecutionAttemptResult.Unterbrochen, attempt.Result);
+        var recoveryEvent = (await history.ListEventsAsync(item.Id)).Single(x => x.EventType == "recovery.interrupted");
+        Assert.AreEqual("InBearbeitung", recoveryEvent.Data["previousStatus"]);
+        Assert.AreEqual("codex", recoveryEvent.Data["platformId"]);
+        Assert.IsTrue(recoveryEvent.Data.ContainsKey("logReference"));
+        Assert.AreEqual(1, (await new SqliteExecutionBlockRepository(factory!)
+            .ListActiveProjectHoldsAsync()).Count);
+
+        var second = await new SqliteStartupRecoveryRepository(factory!)
+            .RecoverInterruptedAsync(detectedAt.AddSeconds(1), "another-restart");
+        Assert.AreEqual(0, second.InterruptedWorkItemCount);
+    }
+
+    [TestMethod]
+    public void DatabaseWorkerLockAllowsOnlyOneOwnerForTheSameDatabase()
+    {
+        using var first = new DatabaseWorkerLock(databasePath!);
+        using var second = new DatabaseWorkerLock(databasePath!);
+
+        Assert.IsTrue(first.TryAcquire());
+        Assert.IsFalse(second.TryAcquire());
+        first.Dispose();
+        Assert.IsTrue(second.TryAcquire());
+    }
+
     private static WorkItem CreateQueuedWorkItem(ProjectId? projectId = null, string platformId = "codex")
     {
         var item = new WorkItem(WorkItemId.New(), "AP", new(50), new(platformId), new("gpt"), new("medium"),

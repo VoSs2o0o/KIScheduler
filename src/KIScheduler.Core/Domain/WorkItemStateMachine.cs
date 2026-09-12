@@ -18,7 +18,9 @@ public static class WorkItemStateMachine
                 [WorkItemStatus.Unterbrochen] = Set(WorkItemStatus.InWarteschlange, WorkItemStatus.WartetAufUsage, WorkItemStatus.MenschlichePruefung, WorkItemStatus.Abgebrochen),
                 [WorkItemStatus.TechnischErfolgreich] = Set(),
                 [WorkItemStatus.ErfolgreichMitWarnung] = Set(),
-                [WorkItemStatus.Fehlgeschlagen] = Set(),
+                // A failed attempt may be returned to the queue by the retry policy. Manual retries of
+                // terminal failures still create a new work item so their audit history stays separate.
+                [WorkItemStatus.Fehlgeschlagen] = Set(WorkItemStatus.InWarteschlange),
                 [WorkItemStatus.Abgebrochen] = Set()
             }.ToFrozenDictionary();
 

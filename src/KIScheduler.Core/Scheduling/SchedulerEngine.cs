@@ -127,6 +127,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
             if (paused || stopped) return 0;
             var now = clock.UtcNow;
             var candidates = await workItems.ListByStatusAsync(DueStatuses, cancellationToken).ConfigureAwait(false);
+            candidates = await FilterRetryBackoffAsync(candidates, now, cancellationToken).ConfigureAwait(false);
             if (candidates.Count == 0) return 0;
 
             var configuredPlatforms = (await platformDefinitions.ListAsync(cancellationToken).ConfigureAwait(false))
@@ -331,8 +332,11 @@ public sealed class SchedulerEngine : ISchedulerEngine
         if (!requiresResume) return (false, true, null);
         var adapter = platforms.GetRequired(item.PlatformId);
         var attempts = await history.ListAttemptsAsync(item.Id, cancellationToken).ConfigureAwait(false);
-        var interrupted = attempts.LastOrDefault(attempt => attempt.Result == ExecutionAttemptResult.UsageExceeded);
-        var available = adapter.Capabilities.SupportsResume && !string.IsNullOrWhiteSpace(interrupted?.SessionId);
+        // Only the latest UsageExceeded attempt is safe to resume automatically. A hold created
+        // after a crash or an ambiguous failure must first be reviewed and released by a person.
+        var interrupted = attempts.LastOrDefault();
+        var available = interrupted?.Result == ExecutionAttemptResult.UsageExceeded
+            && adapter.Capabilities.SupportsResume && !string.IsNullOrWhiteSpace(interrupted.SessionId);
         return (true, available, available ? interrupted!.SessionId : null);
     }
 
@@ -463,6 +467,14 @@ public sealed class SchedulerEngine : ISchedulerEngine
                 result.SessionId ?? resumeSessionId, diagnostic);
             item.CompleteCurrentAttempt(attemptResult);
 
+            DateTimeOffset? retryAtUtc = null;
+            if (attemptResult == ExecutionAttemptResult.Fehlgeschlagen
+                && item.NormalRetryCount < options.MaximumAttempts)
+            {
+                retryAtUtc = completedAt + options.GetRetryDelay(item.NormalRetryCount);
+                item.TransitionTo(WorkItemStatus.InWarteschlange);
+            }
+
             if (attemptResult == ExecutionAttemptResult.UsageExceeded)
             {
                 await PersistUsageExceededAsync(item, attempt, result, completedAt).ConfigureAwait(false);
@@ -471,6 +483,11 @@ public sealed class SchedulerEngine : ISchedulerEngine
 
             await history.AddAttemptAsync(attempt, CancellationToken.None).ConfigureAwait(false);
             await workItems.SaveAsync(item, CancellationToken.None).ConfigureAwait(false);
+            if (result.MayHavePartialChanges && attemptResult is (ExecutionAttemptResult.Unterbrochen
+                or ExecutionAttemptResult.MenschlichePruefung))
+                await EnsureProjectHoldAsync(item,
+                    "Unterbrochene oder unklare Ausführung; der Projektarbeitsbaum kann teilweise verändert sein.",
+                    completedAt).ConfigureAwait(false);
             await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, completedAt,
                 attemptResult is ExecutionAttemptResult.TechnischErfolgreich or ExecutionAttemptResult.ErfolgreichMitWarnung
                     ? ExecutionEventSeverity.Information : ExecutionEventSeverity.Error,
@@ -478,8 +495,22 @@ public sealed class SchedulerEngine : ISchedulerEngine
                 new Dictionary<string, string>
                 {
                     ["reasonCode"] = $"execution.{attemptResult.ToString().ToLowerInvariant()}",
-                    ["outcome"] = result.Outcome.ToString()
+                    ["outcome"] = result.Outcome.ToString(),
+                    ["normalRetryCount"] = item.NormalRetryCount.ToString(),
+                    ["maximumAttempts"] = options.MaximumAttempts.ToString(),
+                    ["retryAtUtc"] = retryAtUtc?.ToString("O") ?? ""
                 }), CancellationToken.None).ConfigureAwait(false);
+
+            if (retryAtUtc.HasValue)
+                await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, completedAt,
+                    ExecutionEventSeverity.Warning, "execution.retry_scheduled",
+                    $"Wiederholungsversuch {item.NormalRetryCount + 1} von {options.MaximumAttempts} ist ab {retryAtUtc:O} zulässig.",
+                    attempt.Id, new Dictionary<string, string>
+                    {
+                        ["reasonCode"] = "execution.retry_backoff",
+                        ["retryAtUtc"] = retryAtUtc.Value.ToString("O"),
+                        ["failedAttemptCount"] = item.NormalRetryCount.ToString()
+                    }), CancellationToken.None).ConfigureAwait(false);
 
             if (item.Status is WorkItemStatus.TechnischErfolgreich or WorkItemStatus.ErfolgreichMitWarnung
                 or WorkItemStatus.Abgebrochen)
@@ -501,7 +532,12 @@ public sealed class SchedulerEngine : ISchedulerEngine
         {
             if (item.Status == WorkItemStatus.Reserviert) item.TransitionTo(WorkItemStatus.Unterbrochen);
             else if (item.Status == WorkItemStatus.InBearbeitung)
+            {
                 item.CompleteCurrentAttempt(ExecutionAttemptResult.Unterbrochen);
+                await EnsureProjectHoldAsync(item,
+                    "Kontrolliertes Herunterfahren nach Ausführungsbeginn; der Projektarbeitsbaum kann teilweise verändert sein.",
+                    clock.UtcNow).ConfigureAwait(false);
+            }
             await workItems.SaveAsync(item, CancellationToken.None).ConfigureAwait(false);
             await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
                 ExecutionEventSeverity.Warning, "execution.interrupted",
@@ -520,6 +556,9 @@ public sealed class SchedulerEngine : ISchedulerEngine
             {
                 item.CompleteCurrentAttempt(ExecutionAttemptResult.MenschlichePruefung);
                 await workItems.SaveAsync(item, CancellationToken.None).ConfigureAwait(false);
+                await EnsureProjectHoldAsync(item,
+                    "Fehler nach Ausführungsbeginn; der Projektarbeitsbaum kann teilweise verändert sein.",
+                    clock.UtcNow).ConfigureAwait(false);
             }
             await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
                 ExecutionEventSeverity.Error, "execution.preparation_failed", exception.Message, attempt?.Id,
@@ -563,6 +602,28 @@ public sealed class SchedulerEngine : ISchedulerEngine
         }
     }
 
+    private async Task<IReadOnlyList<WorkItem>> FilterRetryBackoffAsync(
+        IReadOnlyList<WorkItem> candidates, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        var due = new List<WorkItem>(candidates.Count);
+        foreach (var item in candidates)
+        {
+            if (item.NormalRetryCount == 0)
+            {
+                due.Add(item);
+                continue;
+            }
+
+            var attempts = await history.ListAttemptsAsync(item.Id, cancellationToken).ConfigureAwait(false);
+            var latestFailure = attempts.LastOrDefault(x => x.Result == ExecutionAttemptResult.Fehlgeschlagen);
+            if (latestFailure is null
+                || latestFailure.CompletedAtUtc + options.GetRetryDelay(item.NormalRetryCount) <= now)
+                due.Add(item);
+        }
+        return due;
+    }
+
     private async Task ReleaseProjectHoldsAsync(WorkItem item, DateTimeOffset now)
     {
         var holds = await blocks.ListActiveProjectHoldsAsync(CancellationToken.None).ConfigureAwait(false);
@@ -571,6 +632,15 @@ public sealed class SchedulerEngine : ISchedulerEngine
             hold.Release(now, "Auslösender Auftrag abgeschlossen.", isManual: false, item.Status);
             await blocks.SaveAsync(hold, CancellationToken.None).ConfigureAwait(false);
         }
+    }
+
+    private async Task EnsureProjectHoldAsync(WorkItem item, string reason, DateTimeOffset now)
+    {
+        if (item.ProjectId is not { } projectId) return;
+        var active = await blocks.ListActiveProjectHoldsAsync(CancellationToken.None).ConfigureAwait(false);
+        if (active.Any(x => x.ProjectId == projectId)) return;
+        await blocks.SaveAsync(new ProjectExecutionHold(Guid.NewGuid(), projectId, item.Id,
+            item.PlatformId, reason, now), CancellationToken.None).ConfigureAwait(false);
     }
 
     private async Task MoveToWaitingForUsageAsync(WorkItem item, string reasonCode,

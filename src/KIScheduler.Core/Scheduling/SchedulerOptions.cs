@@ -8,6 +8,9 @@ public sealed class SchedulerOptions
     public TimeSpan HistoryUsageEventInterval { get; set; } = TimeSpan.FromMinutes(10);
     public TimeSpan AgingInterval { get; set; } = TimeSpan.FromMinutes(30);
     public int AgingBonusPerInterval { get; set; } = 1;
+    public int MaximumAttempts { get; set; } = 3;
+    public TimeSpan RetryBackoff { get; set; } = TimeSpan.FromMinutes(1);
+    public TimeSpan MaximumRetryBackoff { get; set; } = TimeSpan.FromMinutes(30);
 
     public void Validate()
     {
@@ -20,6 +23,18 @@ public sealed class SchedulerOptions
             throw new InvalidOperationException("LeaseDuration darf nicht kürzer als ExecutionTimeout sein.");
         if (AgingInterval <= TimeSpan.Zero) throw new InvalidOperationException("AgingInterval muss größer als null sein.");
         if (AgingBonusPerInterval < 0) throw new InvalidOperationException("AgingBonusPerInterval darf nicht negativ sein.");
+        if (MaximumAttempts <= 0) throw new InvalidOperationException("MaximumAttempts muss größer als null sein.");
+        if (RetryBackoff <= TimeSpan.Zero) throw new InvalidOperationException("RetryBackoff muss größer als null sein.");
+        if (MaximumRetryBackoff < RetryBackoff)
+            throw new InvalidOperationException("MaximumRetryBackoff darf nicht kleiner als RetryBackoff sein.");
+    }
+
+    public TimeSpan GetRetryDelay(int failedAttemptCount)
+    {
+        if (failedAttemptCount <= 0) throw new ArgumentOutOfRangeException(nameof(failedAttemptCount));
+        var exponent = Math.Min(failedAttemptCount - 1, 30);
+        var ticks = RetryBackoff.Ticks * Math.Pow(2, exponent);
+        return TimeSpan.FromTicks((long)Math.Min(ticks, MaximumRetryBackoff.Ticks));
     }
 }
 

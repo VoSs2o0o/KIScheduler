@@ -23,6 +23,12 @@ dotnet run --project src/KIScheduler.WinForms/KIScheduler.WinForms.csproj
 
 Nicht geheime Einstellungen liegen in `src/KIScheduler.WinForms/appsettings.json`. Laufzeitprotokolle werden standardmäßig täglich unter `logs/` neben der Anwendung abgelegt und nach der konfigurierten Anzahl von Tagen bereinigt.
 
+## Wiederanlauf und menschliche Prüfung
+
+Beim Start werden verwaiste Reservierungen und Ausführungen atomar als `Unterbrochen` protokolliert. Für möglicherweise veränderte Projektarbeitsbäume bleibt ein Projekt-Hold aktiv, bis der Auftrag erfolgreich abgeschlossen, ausdrücklich abgebrochen oder nach externer Prüfung bewusst freigegeben wird. Die Historie zeigt Plattform, Modell, Projekt, Sitzung, Diagnose und Ereignisprotokolle; ein verfügbarer Fortsetzungsbefehl kann kopiert, wird aber nie automatisch aus der Oberfläche ausgeführt.
+
+Pro Datenbank darf nur eine Instanz als Worker aktiv sein. Normale technische Fehlschläge werden mit dem unter `Scheduler` konfigurierten exponentiellen Backoff wiederholt und enden spätestens nach `MaximumAttempts`. `UsageExceeded` zählt dabei nicht als normaler Fehlversuch.
+
 ## Projektstruktur
 
 - `KIScheduler.Core`: Domänenmodell, Scheduler und Verträge

@@ -22,7 +22,17 @@ internal static class Program
         ApplicationConfiguration.Initialize();
 
         using IHost host = CreateHostBuilder(args).Build();
-        host.Start();
+        try
+        {
+            host.Start();
+        }
+        catch (DatabaseWorkerLockException exception)
+        {
+            MessageBox.Show("KIScheduler verwendet diese Datenbank bereits in einer anderen Instanz. " +
+                "Die zweite Instanz wird beendet, damit kein Auftrag doppelt ausgeführt wird.\r\n\r\n" +
+                exception.LockPath, "KIScheduler bereits aktiv", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
 
         try
         {

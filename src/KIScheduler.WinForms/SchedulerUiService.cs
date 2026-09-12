@@ -13,6 +13,8 @@ public sealed record WorkItemEditModel(string Title, int Priority, string Platfo
 public sealed record QueueRow(WorkItem Item, string Project, string Usage, string Status, string Reason);
 public sealed record PlatformRow(PlatformDefinition Definition, PlatformHealth Health, UsageSnapshot? Usage,
     string EffectiveLimits, string? UsageMessage);
+public sealed record HumanReviewDetails(string Platform, string Model, string Project, string? ProjectRoot,
+    string? SessionId, string FailureReason, string LogReference, string? ResumeCommand);
 public sealed record DashboardData(IReadOnlyList<QueueRow> Queue, IReadOnlyList<PlatformRow> Platforms,
     IReadOnlyList<PlatformUsageBlock> PlatformBlocks, IReadOnlyList<ProjectExecutionHold> ProjectHolds,
     IReadOnlyList<UsagePolicy> Policies, IReadOnlyDictionary<ProjectId, ProjectDefinition> Projects);
@@ -155,10 +157,20 @@ public sealed class SchedulerUiService(
 
     public async Task RequeueAsync(WorkItem item, CancellationToken cancellationToken = default)
     {
-        if (WorkItemStateMachine.CanTransition(item.Status, WorkItemStatus.InWarteschlange))
+        if (item.Status != WorkItemStatus.Fehlgeschlagen
+            && WorkItemStateMachine.CanTransition(item.Status, WorkItemStatus.InWarteschlange))
         {
+            var previous = item.Status;
             item.TransitionTo(WorkItemStatus.InWarteschlange);
             await workItems.SaveAsync(item, cancellationToken).ConfigureAwait(false);
+            await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+                ExecutionEventSeverity.Warning, "work_item.requeued",
+                "Auftrag wurde nach manueller Prüfung erneut eingereiht.", data:
+                new Dictionary<string, string>
+                {
+                    ["reasonCode"] = "work_item.manual_requeue",
+                    ["previousStatus"] = previous.ToString()
+                }), cancellationToken).ConfigureAwait(false);
             return;
         }
         if (item.Status is not (WorkItemStatus.Fehlgeschlagen or WorkItemStatus.TechnischErfolgreich
@@ -177,6 +189,50 @@ public sealed class SchedulerUiService(
 
     public Task<bool> CancelAsync(WorkItem item, CancellationToken cancellationToken = default) =>
         scheduler.CancelAsync(item.Id, cancellationToken);
+
+    public async Task MarkForHumanReviewAsync(WorkItem item,
+        CancellationToken cancellationToken = default)
+    {
+        if (item.Status != WorkItemStatus.MenschlichePruefung)
+        {
+            if (!WorkItemStateMachine.CanTransition(item.Status, WorkItemStatus.MenschlichePruefung))
+                throw new InvalidOperationException($"'{item.Status}' kann nicht extern geprüft werden.");
+            item.TransitionTo(WorkItemStatus.MenschlichePruefung);
+            await workItems.SaveAsync(item, cancellationToken).ConfigureAwait(false);
+        }
+        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+            ExecutionEventSeverity.Warning, "human_review.requested",
+            "Der Auftrag wurde bewusst zur externen menschlichen Prüfung markiert.", data:
+            new Dictionary<string, string> { ["reasonCode"] = "human_review.requested_by_user" }),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<HumanReviewDetails?> GetHumanReviewDetailsAsync(WorkItem item,
+        CancellationToken cancellationToken = default)
+    {
+        if (item.Status is not (WorkItemStatus.MenschlichePruefung or WorkItemStatus.Unterbrochen
+            or WorkItemStatus.WartetAufUsage)) return null;
+        var attemptsTask = history.ListAttemptsAsync(item.Id, cancellationToken);
+        var eventsTask = history.ListEventsAsync(item.Id, cancellationToken);
+        var projectTask = item.ProjectId is { } projectId
+            ? projects.GetAsync(projectId, cancellationToken) : Task.FromResult<ProjectDefinition?>(null);
+        await Task.WhenAll(attemptsTask, eventsTask, projectTask).ConfigureAwait(false);
+        var attempts = attemptsTask.Result;
+        var events = eventsTask.Result;
+        var latestAttempt = attempts.LastOrDefault();
+        var session = attempts.LastOrDefault(x => !string.IsNullOrWhiteSpace(x.SessionId))?.SessionId;
+        var latestFailure = events.LastOrDefault(x => x.Severity == ExecutionEventSeverity.Error)?.Message
+            ?? attempts.LastOrDefault(x => !string.IsNullOrWhiteSpace(x.Diagnostic))?.Diagnostic
+            ?? "Kein genauer Fehlergrund gespeichert.";
+        var canResume = latestAttempt is not null && !string.IsNullOrWhiteSpace(latestAttempt.SessionId)
+            && platformRegistry.GetRequired(item.PlatformId).Capabilities.SupportsResume;
+        var command = canResume ? BuildResumeCommand(item.PlatformId, latestAttempt!.SessionId!) : null;
+        var project = projectTask.Result;
+        return new HumanReviewDetails(item.PlatformId.Value, item.ModelId.Value,
+            project?.Name ?? item.ProjectId?.ToString() ?? "—", project?.RootPath, session,
+            latestFailure, $"{events.Count} Ereignis(se), {attempts.Count} Versuch/Versuche in der Historie",
+            command);
+    }
 
     public async Task ReleaseHoldAsync(ProjectExecutionHold hold, CancellationToken cancellationToken = default)
     {
@@ -322,6 +378,16 @@ public sealed class SchedulerUiService(
         return !Path.IsPathRooted(relative) && relative != ".."
             && !relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
             && !relative.StartsWith($"..{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal);
+    }
+
+    private static string BuildResumeCommand(PlatformId platformId, string sessionId)
+    {
+        var safeSession = sessionId.Replace("\"", "\\\"", StringComparison.Ordinal);
+        return platformId.Value.Equals("codex", StringComparison.OrdinalIgnoreCase)
+            ? $"codex exec resume \"{safeSession}\" -"
+            : platformId.Value.Equals("claude", StringComparison.OrdinalIgnoreCase)
+                ? $"claude --resume \"{safeSession}\""
+                : $"{platformId.Value} --resume \"{safeSession}\"";
     }
 }
 

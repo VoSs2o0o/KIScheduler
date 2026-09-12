@@ -35,11 +35,16 @@ public static class PersistenceServiceCollectionExtensions
         services.AddSingleton<IExecutionBlockRepository, SqliteExecutionBlockRepository>();
         services.AddSingleton<ISettingsRepository, SqliteSettingsRepository>();
         services.AddSingleton<IAtomicExecutionRepository, SqliteAtomicExecutionRepository>();
+        services.AddSingleton<IStartupRecoveryRepository, SqliteStartupRecoveryRepository>();
+        services.AddSingleton(new DatabaseWorkerLock(databasePath));
         services.AddSingleton<IClock, SystemClock>();
         services.AddSingleton<IFileSystem, PhysicalFileSystem>();
         services.AddSingleton<UsagePolicyEvaluator>();
         services.AddSingleton<SchedulerPriorityCalculator>();
+        // Hosted services start in registration order: lock the database before migrating or recovering it.
+        services.AddHostedService<DatabaseWorkerLockHostedService>();
         services.AddHostedService<DatabaseInitializationService>();
+        services.AddHostedService<StartupRecoveryHostedService>();
         return services;
     }
 }
