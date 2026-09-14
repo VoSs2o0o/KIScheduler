@@ -47,6 +47,32 @@ public sealed class UsageAndHoldTests
     }
 
     [TestMethod]
+    public void ProfileStatusBarFormatsNoOneAndMultipleSelectedProfilesExactly()
+    {
+        var codexProfile = PlatformProfileId.New();
+        var codexUsage = new UsageSnapshot(new("codex"), codexProfile, Now, "app-server",
+            UsageQuality.Aktuell,
+            [new UsageWindow("primary", new UsagePercent(12), null, "app-server", Now, UsageQuality.Aktuell)]);
+        var claudeProfile = PlatformProfileId.New();
+        var claudeUsage = new UsageSnapshot(new("claude"), claudeProfile, Now, "command",
+            UsageQuality.Aktuell,
+            [new UsageWindow("session", new UsagePercent(34), null, "command", Now, UsageQuality.Aktuell)]);
+
+        Assert.AreEqual(string.Empty, ProfileUsageStatusFormatter.Format([], Now));
+        Assert.AreEqual("codex/Standard: 12%", ProfileUsageStatusFormatter.Format(
+            [new(new("codex"), "Standard", codexUsage, true, true, true)], Now));
+        Assert.AreEqual("codex/Standard: 12%  |  claude/claude2: 34%",
+            ProfileUsageStatusFormatter.Format(
+            [
+                new(new("codex"), "Standard", codexUsage, true, true, true),
+                new(new("codex"), "ausgeblendet", codexUsage, true, true, false),
+                new(new("claude"), "deaktiviert", claudeUsage, true, false, true),
+                new(new("claude"), "Plattform aus", claudeUsage, false, true, true),
+                new(new("claude"), "claude2", claudeUsage, true, true, true)
+            ], Now));
+    }
+
+    [TestMethod]
     public void UsageExceededIsDistinctAndDoesNotConsumeRetry()
     {
         var attempt = new ExecutionAttempt(ExecutionAttemptId.New(), WorkItemId.New(), 1,

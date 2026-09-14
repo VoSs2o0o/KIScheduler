@@ -254,24 +254,16 @@ public sealed class MainForm : Form
             ApplyQueueRows(); ApplyProjectRows(); ApplyPlatformRows(); ApplyBlockRows(); ApplyPolicyRows();
             UpdateSchedulerPauseUi();
             var usage = data.Platforms
-                .Where(x => x.Definition.Enabled)
-                .SelectMany(x => x.Profiles.Where(p => p.Profile.Enabled && p.Profile.ShowUsageInStatusBar)
-                    .Select(p => $"{StatusProfileName(x.Definition.Id, p.Profile.DisplayName)}: "
-                        + UsageStatusFormatter.Format(p.Usage, DateTimeOffset.UtcNow)))
+                .SelectMany(x => x.Profiles.Select(p => new ProfileUsageStatus(x.Definition.Id,
+                    p.Profile.DisplayName, p.Usage, x.Definition.Enabled, p.Profile.Enabled,
+                    p.Profile.ShowUsageInStatusBar)))
                 .ToList();
-            usageState.Visible = usage.Count > 0;
-            usageState.Text = string.Join("  |  ", usage);
+            usageState.Text = ProfileUsageStatusFormatter.Format(usage, DateTimeOffset.UtcNow);
+            usageState.Visible = usageState.Text.Length > 0;
             runningState.Text = $"Laufende Aufträge: {scheduler.RunningCount}";
         }
         catch (Exception exception) { workerState.Text = $"Aktualisierung fehlgeschlagen: {exception.Message}"; }
         finally { refreshGate.Release(); }
-    }
-
-    private static string StatusProfileName(PlatformId platformId, string profileName)
-    {
-        var platformName = platformId.Value;
-        var abbreviation = platformName[..Math.Min(2, platformName.Length)].ToUpperInvariant();
-        return $"{abbreviation}:{profileName}";
     }
 
     private void ApplyQueueRows()

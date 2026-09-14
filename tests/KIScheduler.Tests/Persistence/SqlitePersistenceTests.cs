@@ -175,6 +175,51 @@ public sealed class SqlitePersistenceTests
     }
 
     [TestMethod]
+    public async Task RenameDefaultChangeAndRemovalNeverTouchProfileOrCredentialFiles()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"kischeduler-profile-files-{Guid.NewGuid():N}");
+        string secondDirectory = Path.Combine(root, "codex2");
+        string removableDirectory = Path.Combine(root, "unused");
+        Directory.CreateDirectory(secondDirectory);
+        Directory.CreateDirectory(removableDirectory);
+        string secondCredential = Path.Combine(secondDirectory, "auth.json");
+        string removableCredential = Path.Combine(removableDirectory, ".credentials.json");
+        await File.WriteAllTextAsync(secondCredential, "{\"token\":\"must-stay\"}");
+        await File.WriteAllTextAsync(removableCredential, "{\"token\":\"must-also-stay\"}");
+
+        try
+        {
+            var repository = new SqlitePlatformProfileRepository(factory!);
+            var originalDefault = (await repository.GetDefaultAsync(new("codex")))!;
+            var second = new PlatformProfile(PlatformProfileId.New(), new("codex"), "codex2", "Codex 2",
+                secondDirectory);
+            var removable = new PlatformProfile(PlatformProfileId.New(), new("codex"), "unused", "Ungenutzt",
+                removableDirectory);
+            await repository.SaveAsync(second);
+            await repository.SaveAsync(removable);
+
+            await repository.SaveAsync(new PlatformProfile(second.Id, second.PlatformId, "work", "Arbeit",
+                second.ConfigurationDirectory));
+            Assert.AreEqual("Arbeit", (await repository.GetAsync(second.Id))!.DisplayName);
+
+            Assert.IsTrue(await repository.DisableAsync(originalDefault.Id));
+            await repository.SaveAsync(new PlatformProfile(second.Id, second.PlatformId,
+                PlatformProfile.DefaultName, PlatformProfile.DefaultDisplayName, second.ConfigurationDirectory,
+                isDefault: true));
+            Assert.AreEqual(second.Id, (await repository.GetDefaultAsync(new("codex")))!.Id);
+
+            Assert.IsTrue(await repository.DisableAsync(removable.Id));
+            Assert.IsTrue(Directory.Exists(removableDirectory));
+            Assert.AreEqual("{\"token\":\"must-also-stay\"}", await File.ReadAllTextAsync(removableCredential));
+            Assert.AreEqual("{\"token\":\"must-stay\"}", await File.ReadAllTextAsync(secondCredential));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task DisabledHistoricalDefaultDoesNotBlockSelectingReplacementDefault()
     {
         var repository = new SqlitePlatformProfileRepository(factory!);

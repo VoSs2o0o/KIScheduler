@@ -33,6 +33,14 @@ Weitergabe den ganzen Ausgabeordner als ZIP verpacken.
 - Maskierung sensibler Argumente, Umgebungswerte, Authentifizierungsheader, strukturierter Secrets und
   Exception-Texte in Prozess- und Dateiprotokollen
 - Standard- und portable Laufzeitpfade
+- Migration einer Datenbank unmittelbar vor AP13 mit verlustfreier Zuordnung aller Bestandsdaten zu
+  den neuen Standardprofilen und erfolgreichem Fremdschlüsselcheck
+- getrennte reale Kindprozesse und unterschiedliche Usage-Antworten für je zwei Codex- und
+  Claude-Profile; geerbte Provider-Variablen werden dabei nachweislich überschrieben
+- Profilumbenennung, Standardprofilwechsel, deaktivierte/fehlende Profile sowie unveränderte
+  Credential-Dateien und Profilordner nach dem Deaktivieren
+- getrennte Codex-App-Server-Clients je Profil einschließlich Wiederverwendung, Austausch und Stop
+- Statusleiste für keine, eine und mehrere aktivierte Profilanzeigen im Format `Plattform/Profil`
 
 ## Manueller Smoke-Test vor jeder Veröffentlichung
 
@@ -60,8 +68,29 @@ Kosten verbrauchen.
 | 15 | Plattform im Auftragsdialog wechseln | Profil wird auf die aktiven Profile der Plattform eingeschränkt, Standard ist vorausgewählt; Modell und Effort aktualisieren sich konsistent |
 | 16 | Standardprofil mit wartendem Auftrag deaktivieren | Die betroffenen Aufträge werden angezeigt und die Deaktivierung verhindert |
 | 17 | Einen nicht belegten Standard mit aktivem Ersatzprofil deaktivieren | Ersatzprofil wird Standard; Dateien, Anmeldedaten und historische Profilspalten bleiben erhalten |
+| 18 | Im Standardprofil `cli_auth_credentials_store = "file"` setzen und mit `CODEX_HOME=%USERPROFILE%\.codex` sowie identischem `CODEX_SQLITE_HOME` `codex login`/`codex login status` ausführen | Anmeldung des Standardkontos ist gültig; keine Credential-Inhalte werden notiert |
+| 19 | In einer frischen Shell mit `CODEX_HOME=%USERPROFILE%\.codex2` und identischem `CODEX_SQLITE_HOME` das Profil `codex2` dateibasiert anmelden | `codex login status` ist gültig; Konto und Usage lassen sich vom Standardprofil unterscheiden |
+| 20 | Je einen kleinen Codex-Auftrag pro Profil starten; danach für ein Profil ein Usage-Limit provozieren oder bei bestehendem Limit prüfen | Prozesse verwenden das gewählte Profil; nur dieses Profil wartet, das andere bleibt in einem anderen Projekt ausführbar |
+| 21 | Nach frischer zulässiger Usage den unterbrochenen Codex-Auftrag fortsetzen | ursprüngliches Profil und ursprüngliche Session werden verwendet; Projekt-Hold endet erst nach Abschluss oder bewusster Freigabe |
+| 22 | Claude einmal mit `CLAUDE_CONFIG_DIR=%USERPROFILE%\.claude` und einmal mit `%USERPROFILE%\.claude2` starten und jeweils `/login` prüfen | Beide Konten bleiben nach Neustart der jeweiligen Shell getrennt; Profilprüfung zeigt getrennte Usage oder nachvollziehbar `unbekannt` |
+| 23 | Ein Profil in KIScheduler umbenennen und ein unbenutztes Profil deaktivieren | Nur KIScheduler-Metadaten ändern sich; Profilordner und `auth.json`/`.credentials.json` bleiben bytegleich erhalten |
+| 24 | KIScheduler- und CLI-Diagnosen nach den Profilprüfungen kontrollieren | Pfade sind dem gewählten Profil zugeordnet; keine Tokens, Credential-Inhalte oder Authorization-Header erscheinen in Log, Screenshot oder Release-Notiz |
 
-## Lokaler Nachweis für AP12
+## Nachweisprotokoll für AP18
+
+Vor Freigabe ausfüllen; keine Anmeldedaten, Token, Credential-Dateien oder Screenshots mit solchen
+Inhalten aufnehmen.
+
+| Feld | Eintrag |
+|---|---|
+| Datum / Tester | offen |
+| KIScheduler-Build | offen |
+| Windows-Version / normales Benutzerkonto | offen |
+| Codex-CLI-Version / Profile `default`, `codex2` | offen |
+| Claude-CLI-Version / Profile `default`, `claude2` | offen |
+| Schritte 1–24 | offen; Abweichungen mit Ticketnummer dokumentieren |
+
+## Frühere lokale Feststellung für AP12
 
 Am 2026-09-12 wurde auf der Entwicklungsmaschine `codex-cli 0.154.0` erkannt. Eine Claude-CLI war dort
 nicht installiert. Daher bleiben die echten Codex-/Claude-Aufrufe und der sichtbare Tray-Test ein

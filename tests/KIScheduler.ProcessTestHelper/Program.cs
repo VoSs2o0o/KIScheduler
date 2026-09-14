@@ -20,6 +20,12 @@ internal static class Program
 
         switch (args[0])
         {
+            case "exec":
+                return await RunFakeCodexExecutionAsync();
+
+            case "--print":
+                return await RunFakeClaudeExecutionAsync();
+
             case "echo":
                 Console.WriteLine($"cwd:{Environment.CurrentDirectory}");
                 for (var index = 1; index < args.Length; index++)
@@ -64,6 +70,10 @@ internal static class Program
             case "fake-codex-app-server":
                 return await RunFakeCodexAppServerAsync();
 
+            case "fake-claude-usage":
+                Console.WriteLine($"Current session: {ReadFakeUsage("CLAUDE_CONFIG_DIR")}% used");
+                return 0;
+
             case "child":
                 await File.WriteAllTextAsync(args[1], Environment.ProcessId.ToString(
                     System.Globalization.CultureInfo.InvariantCulture));
@@ -104,12 +114,64 @@ internal static class Program
                 }
                 string profileHome = JsonSerializer.Serialize(Environment.GetEnvironmentVariable("CODEX_HOME"));
                 string sqliteHome = JsonSerializer.Serialize(Environment.GetEnvironmentVariable("CODEX_SQLITE_HOME"));
-                Console.WriteLine($"{{\"id\":{id.GetRawText()},\"result\":{{\"rateLimitsByLimitId\":{{\"codex\":{{\"limitId\":\"codex\",\"limitName\":\"Codex\",\"primary\":{{\"usedPercent\":25,\"windowDurationMins\":300,\"resetsAt\":1893456000,\"future\":1}},\"secondary\":null,\"rateLimitReachedType\":null,\"unknown\":true}}}},\"profileHome\":{profileHome},\"sqliteHome\":{sqliteHome},\"futureTopLevel\":{{}}}}}}");
-                Console.WriteLine("{\"method\":\"account/rateLimits/updated\",\"params\":{\"rateLimits\":{\"limitId\":\"codex\",\"primary\":{\"usedPercent\":31,\"windowDurationMins\":300,\"resetsAt\":1893456000}}}}");
+                int usedPercent = ReadFakeUsage("CODEX_HOME");
+                Console.WriteLine($"{{\"id\":{id.GetRawText()},\"result\":{{\"rateLimitsByLimitId\":{{\"codex\":{{\"limitId\":\"codex\",\"limitName\":\"Codex\",\"primary\":{{\"usedPercent\":{usedPercent},\"windowDurationMins\":300,\"resetsAt\":1893456000,\"future\":1}},\"secondary\":null,\"rateLimitReachedType\":null,\"unknown\":true}}}},\"profileHome\":{profileHome},\"sqliteHome\":{sqliteHome},\"futureTopLevel\":{{}}}}}}");
+                int pushedPercent = HasFakeUsageMarker("CODEX_HOME") ? usedPercent : 31;
+                Console.WriteLine($"{{\"method\":\"account/rateLimits/updated\",\"params\":{{\"rateLimits\":{{\"limitId\":\"codex\",\"primary\":{{\"usedPercent\":{pushedPercent},\"windowDurationMins\":300,\"resetsAt\":1893456000}}}}}}}}");
             }
             await Console.Out.FlushAsync();
         }
         return 0;
+    }
+
+    private static async Task<int> RunFakeCodexExecutionAsync()
+    {
+        string home = Environment.GetEnvironmentVariable("CODEX_HOME") ?? "<null>";
+        string sqlite = Environment.GetEnvironmentVariable("CODEX_SQLITE_HOME") ?? "<null>";
+        string prompt = await Console.In.ReadToEndAsync();
+        string session = "codex-" + Path.GetFileName(home);
+        Console.WriteLine(JsonSerializer.Serialize(new { type = "thread.started", thread_id = session }));
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            type = "item.completed",
+            item = new { type = "agent_message", text = $"{home}|{sqlite}|{prompt}" }
+        }));
+        Console.WriteLine("{\"type\":\"turn.completed\"}");
+        return 0;
+    }
+
+    private static async Task<int> RunFakeClaudeExecutionAsync()
+    {
+        string home = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") ?? "<null>";
+        string prompt = await Console.In.ReadToEndAsync();
+        string session = "claude-" + Path.GetFileName(home);
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            type = "result",
+            subtype = "success",
+            is_error = false,
+            result = $"{home}|{prompt}",
+            session_id = session
+        }));
+        return 0;
+    }
+
+    private static int ReadFakeUsage(string environmentVariable)
+    {
+        string? directory = Environment.GetEnvironmentVariable(environmentVariable);
+        if (string.IsNullOrWhiteSpace(directory)) return 25;
+        string marker = Path.Combine(directory, ".fake-usage-percent");
+        return File.Exists(marker)
+            && int.TryParse(File.ReadAllText(marker), System.Globalization.CultureInfo.InvariantCulture, out int used)
+                ? used
+                : 25;
+    }
+
+    private static bool HasFakeUsageMarker(string environmentVariable)
+    {
+        string? directory = Environment.GetEnvironmentVariable(environmentVariable);
+        return !string.IsNullOrWhiteSpace(directory)
+            && File.Exists(Path.Combine(directory, ".fake-usage-percent"));
     }
 
     private static void WriteLines(TextWriter writer, string prefix, int count, string payload)
