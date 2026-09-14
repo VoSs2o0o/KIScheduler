@@ -154,7 +154,7 @@ public sealed class CodexAdapterTests
             }
         };
 
-        UsageReadResult result = CodexUsageProvider.Normalize(response, Now);
+        UsageReadResult result = CodexUsageProvider.Normalize(response, Now, ProfileId);
 
         Assert.AreEqual(UsageReadStatus.Available, result.Status);
         Assert.AreEqual(3, result.Snapshot!.Windows.Count);
@@ -179,7 +179,7 @@ public sealed class CodexAdapterTests
             }
         };
 
-        UsageReadResult result = CodexUsageProvider.Normalize(response, Now);
+        UsageReadResult result = CodexUsageProvider.Normalize(response, Now, ProfileId);
 
         Assert.AreEqual(UsageReadStatus.Available, result.Status);
         StringAssert.Contains(result.Message!, "resetsAt");
@@ -189,7 +189,7 @@ public sealed class CodexAdapterTests
     [TestMethod]
     public async Task ProviderUsesCacheHonorsForceRefreshAndPublishesPushUpdates()
     {
-        var client = new FakeAppServerClient(BucketResponse(10));
+        var client = new FakeAppServerClient(BucketResponse(10), ProfileId);
         var clock = new TestClock(Now);
         using var provider = new CodexUsageProvider(client, clock, Options.Create(new CodexOptions
         {
@@ -213,7 +213,7 @@ public sealed class CodexAdapterTests
     [TestMethod]
     public async Task ProviderMapsAppServerAuthenticationFailureToUnknown()
     {
-        var client = new FakeAppServerClient(BucketResponse(10))
+        var client = new FakeAppServerClient(BucketResponse(10), ProfileId)
         {
             Failure = new CodexAppServerException(CodexAppServerFailureKind.Authentication, "login required")
         };

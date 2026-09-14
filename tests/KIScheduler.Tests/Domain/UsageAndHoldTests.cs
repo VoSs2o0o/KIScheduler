@@ -20,7 +20,8 @@ public sealed class UsageAndHoldTests
     [TestMethod]
     public void SnapshotSupportsMultipleUsageWindows()
     {
-        var snapshot = new UsageSnapshot(new PlatformId("codex"), Now, "app-server", UsageQuality.Aktuell,
+        var snapshot = new UsageSnapshot(new PlatformId("codex"), PlatformProfileId.New(), Now,
+            "app-server", UsageQuality.Aktuell,
         [
             new UsageWindow("primary", new UsagePercent(20), Now.AddHours(1), "app-server", Now, UsageQuality.Aktuell),
             new UsageWindow("secondary", new UsagePercent(40), Now.AddDays(1), "app-server", Now, UsageQuality.Aktuell)
@@ -32,7 +33,8 @@ public sealed class UsageAndHoldTests
     [TestMethod]
     public void StatusBarUsageUsesCompactPercentagesAndNextResetCountdown()
     {
-        var snapshot = new UsageSnapshot(new PlatformId("codex"), Now, "app-server", UsageQuality.Aktuell,
+        var snapshot = new UsageSnapshot(new PlatformId("codex"), PlatformProfileId.New(), Now,
+            "app-server", UsageQuality.Aktuell,
         [
             new UsageWindow("primary", new UsagePercent(1), Now.AddHours(6).AddMinutes(20),
                 "app-server", Now, UsageQuality.Aktuell),
@@ -75,7 +77,8 @@ public sealed class UsageAndHoldTests
     [TestMethod]
     public void PlatformBlockNeedsFreshPermissibleSnapshot()
     {
-        var block = new PlatformUsageBlock(Guid.NewGuid(), new PlatformId("codex"), WorkItemId.New(), null,
+        var block = new PlatformUsageBlock(Guid.NewGuid(), new PlatformId("codex"), PlatformProfileId.New(),
+            WorkItemId.New(), null,
             "Limit erreicht", Now);
 
         Assert.ThrowsException<InvalidOperationException>(() =>

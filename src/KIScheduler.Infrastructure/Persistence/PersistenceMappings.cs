@@ -59,6 +59,7 @@ internal static class PersistenceMappings
     {
         Id = value.Id,
         WorkItemId = value.WorkItemId.Value,
+        PlatformProfileId = value.PlatformProfileId.Value,
         AttemptId = value.AttemptId?.Value,
         OccurredAtUtc = value.OccurredAtUtc,
         Severity = (int)value.Severity,
@@ -68,7 +69,8 @@ internal static class PersistenceMappings
     };
 
     public static ExecutionEvent ToDomain(ExecutionEventRow value) => new(value.Id, new(value.WorkItemId),
-        value.OccurredAtUtc, (ExecutionEventSeverity)value.Severity, value.EventType, value.Message,
+        new(value.PlatformProfileId), value.OccurredAtUtc, (ExecutionEventSeverity)value.Severity,
+        value.EventType, value.Message,
         value.AttemptId.HasValue ? new ExecutionAttemptId(value.AttemptId.Value) : null,
         JsonSerializer.Deserialize<Dictionary<string, string>>(value.DataJson, JsonOptions));
 
@@ -76,6 +78,7 @@ internal static class PersistenceMappings
     {
         Id = value.Id,
         PlatformId = value.PlatformId.Value,
+        PlatformProfileId = value.PlatformProfileId.Value,
         TriggeringWorkItemId = value.TriggeringWorkItemId.Value,
         TriggeringAttemptId = value.TriggeringAttemptId?.Value,
         Reason = value.Reason,
@@ -87,7 +90,8 @@ internal static class PersistenceMappings
 
     public static PlatformUsageBlock ToDomain(PlatformUsageBlockRow value)
     {
-        var result = new PlatformUsageBlock(value.Id, new(value.PlatformId), new(value.TriggeringWorkItemId),
+        var result = new PlatformUsageBlock(value.Id, new(value.PlatformId), new(value.PlatformProfileId),
+            new(value.TriggeringWorkItemId),
             value.TriggeringAttemptId.HasValue ? new ExecutionAttemptId(value.TriggeringAttemptId.Value) : null,
             value.Reason, value.CreatedAtUtc, (PlatformBlockReleaseRule)value.ReleaseRule);
         if (value.ReleasedAtUtc.HasValue)

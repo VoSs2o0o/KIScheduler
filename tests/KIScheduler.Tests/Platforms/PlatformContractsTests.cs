@@ -129,17 +129,21 @@ public sealed class PlatformContractsTests
     public async Task FakeUsageProviderQueuesSnapshotsAndPublishesChanges()
     {
         var fake = new FakeUsageProvider(CodexId);
-        var snapshot = new UsageSnapshot(CodexId, DateTimeOffset.UtcNow, "fake", UsageQuality.Aktuell, []);
+        var profileId = PlatformProfileId.New();
+        var snapshot = new UsageSnapshot(CodexId, profileId, DateTimeOffset.UtcNow, "fake",
+            UsageQuality.Aktuell, []);
         UsageReadResult? pushed = null;
         fake.UsageChanged += (_, args) => pushed = args.Result;
 
         fake.Enqueue(UsageReadResult.Available(snapshot));
-        var read = await fake.ReadAsync(forceRefresh: true);
+        fake.SetCurrent(profileId, UsageReadResult.Available(snapshot));
+        var read = await fake.ReadAsync(profileId, forceRefresh: true);
         fake.SetCurrent(read, publishChange: true);
 
         Assert.AreSame(snapshot, read.Snapshot);
         Assert.AreSame(read, pushed);
         CollectionAssert.AreEqual(new[] { true }, fake.ForceRefreshRequests.ToArray());
+        CollectionAssert.AreEqual(new[] { profileId }, fake.ProfileRequests.ToArray());
     }
 
     private static PlatformConfigurationValidator CreateValidator(FakeAiPlatform platform) => new(

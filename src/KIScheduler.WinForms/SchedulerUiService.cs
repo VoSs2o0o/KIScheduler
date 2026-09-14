@@ -46,27 +46,31 @@ public sealed class SchedulerUiService(
         var itemListTask = workItems.ListByStatusAsync(allStatuses, cancellationToken);
         var projectListTask = projects.ListAsync(cancellationToken);
         var platformListTask = platforms.ListAsync(cancellationToken);
+        var profileListTask = profiles.ListAsync(cancellationToken: cancellationToken);
         var policyListTask = policies.ListAsync(cancellationToken: cancellationToken);
         var platformBlocksTask = blocks.ListActivePlatformBlocksAsync(cancellationToken);
         var projectHoldsTask = blocks.ListActiveProjectHoldsAsync(cancellationToken);
         await Task.WhenAll(itemListTask, projectListTask, platformListTask, policyListTask,
-            platformBlocksTask, projectHoldsTask).ConfigureAwait(false);
+            profileListTask, platformBlocksTask, projectHoldsTask).ConfigureAwait(false);
 
         var projectMap = projectListTask.Result.ToDictionary(x => x.Id);
         var holds = projectHoldsTask.Result;
+        var profileMap = profileListTask.Result.ToDictionary(x => x.Id);
         var platformRows = await Task.WhenAll(platformListTask.Result.Select(async definition =>
         {
-            var health = definition.Enabled
-                ? await GetHealthAsync(definition, refreshProviders, cancellationToken).ConfigureAwait(false)
+            var defaultProfile = profileListTask.Result.FirstOrDefault(x => x.IsDefault
+                && PlatformEquals(x.PlatformId, definition.Id));
+            var health = definition.Enabled && defaultProfile is { Enabled: true }
+                ? await GetHealthAsync(definition, defaultProfile, refreshProviders, cancellationToken).ConfigureAwait(false)
                 : new PlatformHealth(PlatformHealthStatus.Unavailable, "Plattform deaktiviert.");
             UsageSnapshot? snapshot = null;
             string? usageMessage = usageMessages.GetValueOrDefault(definition.Id.Value);
-            if (definition.Enabled && refreshProviders
+            if (definition.Enabled && defaultProfile is { Enabled: true } && refreshProviders
                 && usageRegistry.TryGet(definition.Id, out var provider) && provider is not null)
             {
                 try
                 {
-                    var read = await provider.ReadAsync(true, cancellationToken).ConfigureAwait(false);
+                    var read = await provider.ReadAsync(defaultProfile.Id, true, cancellationToken).ConfigureAwait(false);
                     usageMessage = read.Message;
                     usageMessages[definition.Id.Value] = usageMessage;
                     if (read.Snapshot is not null)
@@ -81,23 +85,30 @@ public sealed class SchedulerUiService(
                     usageMessages[definition.Id.Value] = usageMessage;
                 }
             }
-            snapshot ??= await snapshots.GetLatestAsync(definition.Id, cancellationToken).ConfigureAwait(false);
+            if (defaultProfile is not null)
+                snapshot ??= await snapshots.GetLatestAsync(defaultProfile.Id, cancellationToken).ConfigureAwait(false);
             return new PlatformRow(definition, health, snapshot, definition.Enabled
                 ? DescribeLimits(definition, policyListTask.Result, snapshot) : "Deaktiviert", usageMessage);
         })).ConfigureAwait(false);
 
-        var queue = itemListTask.Result.Select(item =>
+        var queue = await Task.WhenAll(itemListTask.Result.Select(async item =>
         {
             var held = item.ProjectId is { } id && holds.Any(x => x.ProjectId == id);
             var project = item.ProjectId is { } projectId && projectMap.TryGetValue(projectId, out var value)
                 ? value.Name : "—";
             var platform = platformRows.FirstOrDefault(x => PlatformEquals(x.Definition.Id, item.PlatformId));
-            var usage = platform?.Usage is null ? "unbekannt" : string.Join(", ",
-                platform.Usage.Windows.Select(x => $"{x.Name}: {x.UsedPercent}"));
+            profileMap.TryGetValue(item.PlatformProfileId, out var profile);
+            var snapshot = profile is null ? null
+                : await snapshots.GetLatestAsync(item.PlatformProfileId, cancellationToken).ConfigureAwait(false);
+            var usage = snapshot is null ? "unbekannt" : string.Join(", ",
+                snapshot.Windows.Select(x => $"{x.Name}: {x.UsedPercent}"));
             var reason = platform is { Definition.Enabled: false } ? "Plattform deaktiviert"
-                : LatestBlockingReason(item, held, platformBlocksTask.Result, platform?.Usage);
+                : profile is null ? "Plattformprofil fehlt"
+                : !PlatformEquals(profile.PlatformId, item.PlatformId) ? "Plattformprofil gehört zu einer anderen Plattform"
+                : !profile.Enabled ? "Plattformprofil deaktiviert"
+                : LatestBlockingReason(item, held, platformBlocksTask.Result, snapshot);
             return new QueueRow(item, project, usage, item.GetDisplayStatus(held).ToString(), reason);
-        }).ToList();
+        })).ConfigureAwait(false);
         return new DashboardData(queue, platformRows, platformBlocksTask.Result, holds,
             policyListTask.Result, projectMap);
     }
@@ -116,7 +127,7 @@ public sealed class SchedulerUiService(
         var platformProfile = existing is not null && PlatformEquals(definition.Id, existing.PlatformId)
             ? await profiles.GetAsync(existing.PlatformProfileId, cancellationToken).ConfigureAwait(false)
             : await profiles.GetDefaultAsync(platformId, cancellationToken).ConfigureAwait(false);
-        if (platformProfile is null || !PlatformEquals(platformProfile.PlatformId, platformId))
+        if (platformProfile is null || !platformProfile.Enabled || !PlatformEquals(platformProfile.PlatformId, platformId))
             throw new InvalidOperationException($"Für Plattform '{platformId.Value}' ist kein gültiges Standardprofil konfiguriert.");
         var modelId = new ModelId(model.ModelId);
         var effort = new EffortLevel(model.Effort);
@@ -169,7 +180,7 @@ public sealed class SchedulerUiService(
             var previous = item.Status;
             item.TransitionTo(WorkItemStatus.InWarteschlange);
             await workItems.SaveAsync(item, cancellationToken).ConfigureAwait(false);
-            await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+            await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, clock.UtcNow,
                 ExecutionEventSeverity.Warning, "work_item.requeued",
                 "Auftrag wurde nach manueller Prüfung erneut eingereiht.", data:
                 new Dictionary<string, string>
@@ -187,7 +198,8 @@ public sealed class SchedulerUiService(
             item.CommitMessage);
         replacement.TransitionTo(WorkItemStatus.InWarteschlange);
         await workItems.SaveAsync(replacement, cancellationToken).ConfigureAwait(false);
-        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), replacement.Id, clock.UtcNow,
+        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), replacement.Id,
+            replacement.PlatformProfileId, clock.UtcNow,
             ExecutionEventSeverity.Information, "work_item.requeued", "Auftrag wurde aus einem abgeschlossenen Auftrag neu eingereiht.", data:
             new Dictionary<string, string> { ["sourceWorkItemId"] = item.Id.ToString() }), cancellationToken)
             .ConfigureAwait(false);
@@ -206,7 +218,7 @@ public sealed class SchedulerUiService(
             item.TransitionTo(WorkItemStatus.MenschlichePruefung);
             await workItems.SaveAsync(item, cancellationToken).ConfigureAwait(false);
         }
-        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, clock.UtcNow,
             ExecutionEventSeverity.Warning, "human_review.requested",
             "Der Auftrag wurde bewusst zur externen menschlichen Prüfung markiert.", data:
             new Dictionary<string, string> { ["reasonCode"] = "human_review.requested_by_user" }),
@@ -246,7 +258,7 @@ public sealed class SchedulerUiService(
             ?? throw new InvalidOperationException("Der auslösende Auftrag wurde nicht gefunden.");
         hold.Release(clock.UtcNow, "Bewusst manuell in der Oberfläche freigegeben.", true, trigger.Status);
         await blocks.SaveAsync(hold, cancellationToken).ConfigureAwait(false);
-        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), trigger.Id, clock.UtcNow,
+        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), trigger.Id, trigger.PlatformProfileId, clock.UtcNow,
             ExecutionEventSeverity.Warning, "project.hold_released", "Projekt-Hold wurde manuell freigegeben.", data:
             new Dictionary<string, string> { ["reasonCode"] = "project.hold_manual_release" }), cancellationToken)
             .ConfigureAwait(false);
@@ -315,13 +327,13 @@ public sealed class SchedulerUiService(
     public static void ValidateRegex(string pattern) => _ = new Regex(pattern,
         RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
 
-    private async Task<PlatformHealth> GetHealthAsync(PlatformDefinition definition, bool force,
+    private async Task<PlatformHealth> GetHealthAsync(PlatformDefinition definition, PlatformProfile profile, bool force,
         CancellationToken cancellationToken)
     {
         if (!force && healthCache.TryGetValue(definition.Id.Value, out var cached)
             && clock.UtcNow - cached.At < TimeSpan.FromSeconds(30)) return cached.Health;
         PlatformHealth health;
-        try { health = await platformRegistry.GetRequired(definition.Id).CheckAvailabilityAsync(cancellationToken).ConfigureAwait(false); }
+        try { health = await platformRegistry.GetRequired(definition.Id).CheckAvailabilityAsync(profile.Id, cancellationToken).ConfigureAwait(false); }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         { health = new PlatformHealth(PlatformHealthStatus.Unavailable, exception.Message); }
         healthCache[definition.Id.Value] = (clock.UtcNow, health);
@@ -353,7 +365,7 @@ public sealed class SchedulerUiService(
         IReadOnlyList<PlatformUsageBlock> platformBlocks, UsageSnapshot? snapshot)
     {
         if (held) return "Projekt-Hold durch einen möglicherweise teilweise ausgeführten Auftrag";
-        var block = platformBlocks.FirstOrDefault(x => PlatformEquals(x.PlatformId, item.PlatformId));
+        var block = platformBlocks.FirstOrDefault(x => x.PlatformProfileId == item.PlatformProfileId);
         if (block is not null) return block.Reason;
         var server = snapshot?.Windows.FirstOrDefault(x => x.IsServerLimitReached);
         if (server is not null) return $"Serverlimit: {server.RateLimitReachedType}";

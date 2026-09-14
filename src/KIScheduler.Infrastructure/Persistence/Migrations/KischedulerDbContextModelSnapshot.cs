@@ -99,6 +99,9 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("OccurredAtUtc")
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid>("PlatformProfileId")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("Severity")
                         .HasColumnType("INTEGER");
 
@@ -108,6 +111,8 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("AttemptId");
+
+                    b.HasIndex("PlatformProfileId");
 
                     b.HasIndex("WorkItemId", "OccurredAtUtc");
 
@@ -220,6 +225,9 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid>("PlatformProfileId")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Reason")
                         .IsRequired()
                         .HasColumnType("TEXT");
@@ -243,7 +251,9 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("TriggeringWorkItemId");
 
-                    b.HasIndex("PlatformId", "ReleasedAtUtc");
+                    b.HasIndex("PlatformProfileId", "ReleasedAtUtc");
+
+                    b.HasIndex("PlatformProfileId", "PlatformId");
 
                     b.ToTable("PlatformUsageBlocks", (string)null);
                 });
@@ -438,6 +448,9 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid>("PlatformProfileId")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("Quality")
                         .HasColumnType("INTEGER");
 
@@ -451,7 +464,9 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("PlatformId", "ReadAtUtc");
+                    b.HasIndex("PlatformProfileId", "ReadAtUtc");
+
+                    b.HasIndex("PlatformProfileId", "PlatformId");
 
                     b.ToTable("UsageSnapshots", (string)null);
                 });
@@ -631,6 +646,13 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("KIScheduler.Infrastructure.Persistence.PlatformUsageBlockRow", b =>
                 {
+                    b.HasOne("KIScheduler.Infrastructure.Persistence.PlatformProfileRow", null)
+                        .WithMany()
+                        .HasForeignKey("PlatformProfileId", "PlatformId")
+                        .HasPrincipalKey("Id", "PlatformId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("KIScheduler.Infrastructure.Persistence.WorkItemRow", null)
                         .WithMany()
                         .HasForeignKey("TriggeringWorkItemId")
@@ -659,6 +681,16 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("WorkItemId")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("KIScheduler.Infrastructure.Persistence.UsageSnapshotRow", b =>
+                {
+                    b.HasOne("KIScheduler.Infrastructure.Persistence.PlatformProfileRow", null)
+                        .WithMany()
+                        .HasForeignKey("PlatformProfileId", "PlatformId")
+                        .HasPrincipalKey("Id", "PlatformId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 

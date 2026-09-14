@@ -105,14 +105,16 @@ public sealed class CodexUsageProvider : IUsageProvider, IDisposable
         if (!forceRefresh && IsFresh(cached)) return cached;
         ICodexAppServerClient client = directClient
             ?? throw new InvalidOperationException("Kein Codex-App-Server-Client konfiguriert.");
-        UsageReadResult result = await ReadCoreAsync(client, client.PlatformProfileId, cancellationToken)
+        if (client.PlatformProfileId is not { } profileId)
+            return UsageReadResult.Unknown("Codex-Usage unbekannt: Der App-Server-Client besitzt keine Profil-ID.");
+        UsageReadResult result = await ReadCoreAsync(client, profileId, cancellationToken)
             .ConfigureAwait(false);
         Volatile.Write(ref legacyCurrent, result);
         return result;
     }
 
     private async Task<UsageReadResult> ReadCoreAsync(ICodexAppServerClient client,
-        PlatformProfileId? profileId, CancellationToken cancellationToken)
+        PlatformProfileId profileId, CancellationToken cancellationToken)
     {
         try
         {
@@ -126,7 +128,7 @@ public sealed class CodexUsageProvider : IUsageProvider, IDisposable
         {
             UsageReadResult unknown = UsageReadResult.Unknown(
                 $"Codex-Usage unbekannt ({ToReason(exception.Kind)}): {exception.Message}");
-            if (profileId.HasValue) unknown = unknown.ForProfile(profileId.Value);
+            unknown = unknown.ForProfile(profileId);
             Store(profileId, unknown);
             return unknown;
         }
@@ -135,14 +137,14 @@ public sealed class CodexUsageProvider : IUsageProvider, IDisposable
         {
             UsageReadResult unknown = UsageReadResult.Unknown(
                 $"Codex-Usage unbekannt (parse): {exception.Message}");
-            if (profileId.HasValue) unknown = unknown.ForProfile(profileId.Value);
+            unknown = unknown.ForProfile(profileId);
             Store(profileId, unknown);
             return unknown;
         }
     }
 
     public static UsageReadResult Normalize(CodexRateLimitsResponse response, DateTimeOffset readAtUtc,
-        PlatformProfileId? profileId = null)
+        PlatformProfileId profileId)
     {
         ArgumentNullException.ThrowIfNull(response);
         readAtUtc = readAtUtc.ToUniversalTime();
@@ -170,12 +172,13 @@ public sealed class CodexUsageProvider : IUsageProvider, IDisposable
                 : $"Codex-Rate-Limit-Antwort enthält keine nutzbaren Fenster; fehlt: {string.Join(", ", missing)}.");
         else
         {
-            var snapshot = new UsageSnapshot(CodexPlatform.Id, readAtUtc, Source, UsageQuality.Aktuell, windows);
+            var snapshot = new UsageSnapshot(CodexPlatform.Id, profileId, readAtUtc, Source,
+                UsageQuality.Aktuell, windows);
             result = new UsageReadResult(UsageReadStatus.Available, snapshot,
                 missing.Count == 0 ? null : $"Fehlende Codex-Usage-Felder: {string.Join(", ", missing)}.",
                 profileId);
         }
-        return profileId.HasValue && !result.PlatformProfileId.HasValue ? result.ForProfile(profileId.Value) : result;
+        return !result.PlatformProfileId.HasValue ? result.ForProfile(profileId) : result;
 
         void AddWindow(CodexRateLimitWindow? value, string kind, string limitId, CodexRateLimitBucket bucket)
         {
@@ -228,17 +231,26 @@ public sealed class CodexUsageProvider : IUsageProvider, IDisposable
     {
         PlatformProfileId? profileId = args.PlatformProfileId ?? (sender as ICodexAppServerClient)?.PlatformProfileId;
         UsageReadResult result;
-        try
+        if (!profileId.HasValue)
         {
-            result = Normalize(args.RateLimits, clock.UtcNow, profileId);
+            result = UsageReadResult.Unknown("Codex-Push-Aktualisierung besitzt keine Profil-ID.");
         }
-        catch (Exception exception) when (exception is FormatException or OverflowException
-            or ArgumentOutOfRangeException)
+        else
         {
-            result = UsageReadResult.Unknown($"Codex-Push-Aktualisierung ist ungültig (parse): {exception.Message}");
-            if (profileId.HasValue) result = result.ForProfile(profileId.Value);
+            try
+            {
+                result = Normalize(args.RateLimits, clock.UtcNow, profileId.Value);
+            }
+            catch (Exception exception) when (exception is FormatException or OverflowException
+                or ArgumentOutOfRangeException)
+            {
+                result = UsageReadResult.Unknown(
+                    $"Codex-Push-Aktualisierung ist ungültig (parse): {exception.Message}");
+                result = result.ForProfile(profileId.Value);
+            }
         }
         Store(profileId, result);
+        if (ReferenceEquals(sender, directClient)) Volatile.Write(ref legacyCurrent, result);
         UsageChanged?.Invoke(this, new UsageChangedEventArgs(result));
     }
 

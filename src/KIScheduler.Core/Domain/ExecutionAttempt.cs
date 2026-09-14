@@ -55,13 +55,16 @@ public sealed record ExecutionAttempt
 
 public sealed record ExecutionEvent
 {
-    public ExecutionEvent(Guid id, WorkItemId workItemId, DateTimeOffset occurredAtUtc,
+    public ExecutionEvent(Guid id, WorkItemId workItemId, PlatformProfileId platformProfileId,
+        DateTimeOffset occurredAtUtc,
         ExecutionEventSeverity severity, string eventType, string message, ExecutionAttemptId? attemptId = null,
         IReadOnlyDictionary<string, string>? data = null)
     {
         Id = DomainValidation.Id(id, nameof(id));
         DomainValidation.Id(workItemId.Value, nameof(workItemId));
+        DomainValidation.Id(platformProfileId.Value, nameof(platformProfileId));
         WorkItemId = workItemId;
+        PlatformProfileId = platformProfileId;
         OccurredAtUtc = DomainValidation.Utc(occurredAtUtc, nameof(occurredAtUtc));
         Severity = severity;
         EventType = DomainValidation.Required(eventType, nameof(eventType));
@@ -78,6 +81,7 @@ public sealed record ExecutionEvent
 
     public Guid Id { get; }
     public WorkItemId WorkItemId { get; }
+    public PlatformProfileId PlatformProfileId { get; }
     public ExecutionAttemptId? AttemptId { get; }
     public DateTimeOffset OccurredAtUtc { get; }
     public ExecutionEventSeverity Severity { get; }

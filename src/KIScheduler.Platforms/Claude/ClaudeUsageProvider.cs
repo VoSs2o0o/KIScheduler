@@ -11,14 +11,16 @@ public sealed class ClaudeUsageProvider : IUsageProvider
     private readonly ClaudeOptions options;
     private readonly IClaudeProfileResolver? profileResolver;
     private readonly IPlatformRepository? platformRepository;
+    private readonly PlatformProfileId? directProfileId;
 
     public ClaudeUsageProvider(CommandRegexReader reader, IClock clock, IOptions<ClaudeOptions> options,
-        IPlatformRepository? platformRepository = null)
+        IPlatformRepository? platformRepository = null, PlatformProfileId? platformProfileId = null)
     {
         this.reader = reader ?? throw new ArgumentNullException(nameof(reader));
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
         this.options = options?.Value ?? throw new ArgumentNullException(nameof(options));
         this.platformRepository = platformRepository;
+        directProfileId = platformProfileId;
         this.options.Validate();
     }
 
@@ -61,7 +63,9 @@ public sealed class ClaudeUsageProvider : IUsageProvider
             }
         }
 
-        return await ReadCoreAsync(null, null, cancellationToken).ConfigureAwait(false);
+        if (directProfileId is not { } profileId)
+            return UsageReadResult.Unknown("Claude-Usage unbekannt: Es ist keine Profil-ID konfiguriert.");
+        return await ReadCoreAsync(null, profileId, cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<UsageReadResult> ReadAsync(PlatformProfileId profileId, bool forceRefresh,
@@ -84,7 +88,7 @@ public sealed class ClaudeUsageProvider : IUsageProvider
         }
     }
 
-    private async Task<UsageReadResult> ReadCoreAsync(PlatformProfile? profile, PlatformProfileId? profileId,
+    private async Task<UsageReadResult> ReadCoreAsync(PlatformProfile? profile, PlatformProfileId profileId,
         CancellationToken cancellationToken)
     {
         var executable = platformRepository is null
@@ -113,30 +117,32 @@ public sealed class ClaudeUsageProvider : IUsageProvider
     {
         ArgumentNullException.ThrowIfNull(sampleOutput);
         CommandRegexParseResult parsed = CommandRegexReader.Parse(sampleOutput, CreateRequest());
-        return new ClaudeUsageTestResult(sampleOutput, parsed.MatchedText,
-            Normalize(parsed, clock.UtcNow, options.Usage));
+        var normalized = directProfileId is { } profileId
+            ? Normalize(parsed, clock.UtcNow, options.Usage, profileId)
+            : UsageReadResult.Unknown("Claude-Usage-Test benötigt eine Profil-ID.");
+        return new ClaudeUsageTestResult(sampleOutput, parsed.MatchedText, normalized);
     }
 
     public static UsageReadResult Normalize(CommandRegexParseResult parsed, DateTimeOffset readAtUtc,
-        ClaudeUsageOptions options, PlatformProfileId? profileId = null)
+        ClaudeUsageOptions options, PlatformProfileId profileId)
     {
         ArgumentNullException.ThrowIfNull(parsed);
         ArgumentNullException.ThrowIfNull(options);
         if (!parsed.IsMatch || !parsed.Percent.HasValue)
             return UsageReadResult.Unknown(parsed.Error ?? "Claude-Usage-Ausgabe stimmt mit keinem Muster überein.")
-                .ForProfileIfPresent(profileId);
+                .ForProfile(profileId);
 
         try
         {
             var used = new UsagePercent(parsed.Percent.Value);
             var window = new UsageWindow(options.WindowName, used, parsed.ResetAtUtc,
                 options.Source, readAtUtc, UsageQuality.Aktuell);
-            return new UsageReadResult(UsageReadStatus.Available, new UsageSnapshot(ClaudePlatform.Id, readAtUtc,
+            return new UsageReadResult(UsageReadStatus.Available, new UsageSnapshot(ClaudePlatform.Id, profileId, readAtUtc,
                 options.Source, UsageQuality.Aktuell, [window]), platformProfileId: profileId);
         }
         catch (ArgumentOutOfRangeException exception)
         {
-            return UsageReadResult.Unknown(exception.Message).ForProfileIfPresent(profileId);
+            return UsageReadResult.Unknown(exception.Message).ForProfile(profileId);
         }
     }
 
@@ -163,14 +169,8 @@ public sealed class ClaudeUsageProvider : IUsageProvider
         };
     }
 
-    private static UsageReadResult WithProfile(UsageReadResult result, PlatformProfileId? profileId) =>
-        result.ForProfileIfPresent(profileId);
-}
-
-internal static class UsageReadResultProfileExtensions
-{
-    public static UsageReadResult ForProfileIfPresent(this UsageReadResult result,
-        PlatformProfileId? profileId) => profileId.HasValue ? result.ForProfile(profileId.Value) : result;
+    private static UsageReadResult WithProfile(UsageReadResult result, PlatformProfileId profileId) =>
+        result.ForProfile(profileId);
 }
 
 public sealed record ClaudeUsageTestResult(string SampleOutput, string? MatchedText,

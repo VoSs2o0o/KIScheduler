@@ -27,7 +27,7 @@ public sealed class HistoryEventFilterTests
     }
 
     private static ExecutionEvent Event(WorkItemId workItemId, DateTimeOffset occurredAt,
-        string eventType, string message) => new(Guid.NewGuid(), workItemId, occurredAt,
+        string eventType, string message) => new(Guid.NewGuid(), workItemId, PlatformProfileId.New(), occurredAt,
         ExecutionEventSeverity.Information, eventType, message, data:
         new Dictionary<string, string> { ["reasonCode"] = message });
 }

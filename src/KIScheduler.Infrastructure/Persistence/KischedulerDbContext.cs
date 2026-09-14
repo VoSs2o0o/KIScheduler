@@ -97,7 +97,11 @@ public sealed class KischedulerDbContext(DbContextOptions<KischedulerDbContext> 
             entity.ToTable("UsageSnapshots"); entity.HasKey(x => x.Id);
             entity.Property(x => x.PlatformId).HasMaxLength(100).IsRequired();
             entity.Property(x => x.Source).HasMaxLength(500).IsRequired();
-            entity.HasIndex(x => new { x.PlatformId, x.ReadAtUtc });
+            entity.HasIndex(x => new { x.PlatformProfileId, x.ReadAtUtc });
+            entity.HasOne<PlatformProfileRow>().WithMany()
+                .HasForeignKey(x => new { x.PlatformProfileId, x.PlatformId })
+                .HasPrincipalKey(x => new { x.Id, x.PlatformId })
+                .OnDelete(DeleteBehavior.Restrict);
         });
         modelBuilder.Entity<UsageWindowRow>(entity =>
         {
@@ -127,14 +131,19 @@ public sealed class KischedulerDbContext(DbContextOptions<KischedulerDbContext> 
             entity.ToTable("ExecutionEvents"); entity.HasKey(x => x.Id);
             entity.Property(x => x.DataJson).IsRequired();
             entity.HasIndex(x => new { x.WorkItemId, x.OccurredAtUtc });
+            entity.HasIndex(x => x.PlatformProfileId);
             entity.HasOne<WorkItemRow>().WithMany().HasForeignKey(x => x.WorkItemId).OnDelete(DeleteBehavior.Cascade);
             entity.HasOne<ExecutionAttemptRow>().WithMany().HasForeignKey(x => x.AttemptId).OnDelete(DeleteBehavior.SetNull);
         });
         modelBuilder.Entity<PlatformUsageBlockRow>(entity =>
         {
             entity.ToTable("PlatformUsageBlocks"); entity.HasKey(x => x.Id);
-            entity.HasIndex(x => new { x.PlatformId, x.ReleasedAtUtc });
+            entity.HasIndex(x => new { x.PlatformProfileId, x.ReleasedAtUtc });
             entity.HasOne<WorkItemRow>().WithMany().HasForeignKey(x => x.TriggeringWorkItemId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<PlatformProfileRow>().WithMany()
+                .HasForeignKey(x => new { x.PlatformProfileId, x.PlatformId })
+                .HasPrincipalKey(x => new { x.Id, x.PlatformId })
+                .OnDelete(DeleteBehavior.Restrict);
         });
         modelBuilder.Entity<ProjectExecutionHoldRow>(entity =>
         {
@@ -232,6 +241,7 @@ public sealed class UsageSnapshotRow
 {
     public Guid Id { get; set; }
     public string PlatformId { get; set; } = "";
+    public Guid PlatformProfileId { get; set; }
     public DateTimeOffset ReadAtUtc { get; set; }
     public string Source { get; set; } = "";
     public int Quality { get; set; }
@@ -274,6 +284,7 @@ public sealed class ExecutionEventRow
 {
     public Guid Id { get; set; }
     public Guid WorkItemId { get; set; }
+    public Guid PlatformProfileId { get; set; }
     public Guid? AttemptId { get; set; }
     public DateTimeOffset OccurredAtUtc { get; set; }
     public int Severity { get; set; }
@@ -286,6 +297,7 @@ public sealed class PlatformUsageBlockRow
 {
     public Guid Id { get; set; }
     public string PlatformId { get; set; } = "";
+    public Guid PlatformProfileId { get; set; }
     public Guid TriggeringWorkItemId { get; set; }
     public Guid? TriggeringAttemptId { get; set; }
     public string Reason { get; set; } = "";

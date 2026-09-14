@@ -2,12 +2,15 @@ namespace KIScheduler.Core.Domain;
 
 public sealed class PlatformUsageBlock
 {
-    public PlatformUsageBlock(Guid id, PlatformId platformId, WorkItemId triggeringWorkItemId,
+    public PlatformUsageBlock(Guid id, PlatformId platformId, PlatformProfileId platformProfileId,
+        WorkItemId triggeringWorkItemId,
         ExecutionAttemptId? triggeringAttemptId, string reason, DateTimeOffset createdAtUtc,
         PlatformBlockReleaseRule releaseRule = PlatformBlockReleaseRule.FrischerZulaessigerUsageSnapshot)
     {
         Id = DomainValidation.Id(id, nameof(id));
         PlatformId = platformId ?? throw new ArgumentNullException(nameof(platformId));
+        DomainValidation.Id(platformProfileId.Value, nameof(platformProfileId));
+        PlatformProfileId = platformProfileId;
         DomainValidation.Id(triggeringWorkItemId.Value, nameof(triggeringWorkItemId));
         TriggeringWorkItemId = triggeringWorkItemId;
         if (triggeringAttemptId.HasValue)
@@ -23,6 +26,7 @@ public sealed class PlatformUsageBlock
 
     public Guid Id { get; }
     public PlatformId PlatformId { get; }
+    public PlatformProfileId PlatformProfileId { get; }
     public WorkItemId TriggeringWorkItemId { get; }
     public ExecutionAttemptId? TriggeringAttemptId { get; }
     public string Reason { get; }

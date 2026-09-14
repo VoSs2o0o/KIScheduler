@@ -9,7 +9,7 @@ public interface IUsageProvider
     Task<UsageReadResult> ReadAsync(bool forceRefresh,
         CancellationToken cancellationToken = default);
     Task<UsageReadResult> ReadAsync(PlatformProfileId profileId, bool forceRefresh,
-        CancellationToken cancellationToken = default) => ReadAsync(forceRefresh, cancellationToken);
+        CancellationToken cancellationToken = default);
     event EventHandler<UsageChangedEventArgs>? UsageChanged;
 }
 
@@ -35,10 +35,15 @@ public sealed record UsageReadResult
             throw new ArgumentException("Ein verfügbares Usage-Ergebnis benötigt einen Snapshot.", nameof(snapshot));
         }
 
+        if (snapshot is not null && platformProfileId.HasValue
+            && snapshot.PlatformProfileId != platformProfileId.Value)
+            throw new ArgumentException("Snapshot und Usage-Ergebnis müssen zum selben Plattformprofil gehören.",
+                nameof(platformProfileId));
+
         Status = status;
         Snapshot = snapshot;
         Message = string.IsNullOrWhiteSpace(message) ? null : message.Trim();
-        PlatformProfileId = platformProfileId;
+        PlatformProfileId = platformProfileId ?? snapshot?.PlatformProfileId;
     }
 
     public UsageReadStatus Status { get; }
@@ -54,7 +59,11 @@ public sealed record UsageReadResult
         new(UsageReadStatus.Unknown, message: message);
 
     public UsageReadResult ForProfile(PlatformProfileId platformProfileId) =>
-        new(Status, Snapshot, Message, platformProfileId);
+        Snapshot is null
+            ? new(Status, message: Message, platformProfileId: platformProfileId)
+            : Snapshot.PlatformProfileId == platformProfileId
+                ? new(Status, Snapshot, Message, platformProfileId)
+                : throw new InvalidOperationException("Ein Snapshot darf nicht nachträglich einem anderen Profil zugeordnet werden.");
 }
 
 public sealed class UsageChangedEventArgs : EventArgs

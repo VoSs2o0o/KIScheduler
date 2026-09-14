@@ -112,10 +112,13 @@ public sealed record UsageWindow
 
 public sealed class UsageSnapshot
 {
-    public UsageSnapshot(PlatformId platformId, DateTimeOffset readAtUtc, string source,
+    public UsageSnapshot(PlatformId platformId, PlatformProfileId platformProfileId,
+        DateTimeOffset readAtUtc, string source,
         UsageQuality quality, IEnumerable<UsageWindow> windows)
     {
         PlatformId = platformId ?? throw new ArgumentNullException(nameof(platformId));
+        DomainValidation.Id(platformProfileId.Value, nameof(platformProfileId));
+        PlatformProfileId = platformProfileId;
         ReadAtUtc = DomainValidation.Utc(readAtUtc, nameof(readAtUtc));
         Source = DomainValidation.Required(source, nameof(source));
         Quality = quality;
@@ -129,6 +132,7 @@ public sealed class UsageSnapshot
     }
 
     public PlatformId PlatformId { get; }
+    public PlatformProfileId PlatformProfileId { get; }
     public DateTimeOffset ReadAtUtc { get; }
     public string Source { get; }
     public UsageQuality Quality { get; }

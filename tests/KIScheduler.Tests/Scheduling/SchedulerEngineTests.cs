@@ -148,6 +148,131 @@ public sealed class SchedulerEngineTests
     }
 
     [TestMethod]
+    public async Task UsageBlockOnlyStopsItsProfileAndResumeKeepsOriginalProfileAndSession()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        PlatformProfileId defaultProfile = fixture.Profile("codex");
+        PlatformProfileId secondProfile = await fixture.AddProfileAsync("codex", "codex2");
+        var interrupted = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("default-profile"),
+            90, autoCommit: false, profileId: defaultProfile);
+        fixture.Platform("codex").EnqueueResult(new(PlatformExecutionOutcome.UsageExceeded, 7,
+            "session-default", "Limit erreicht", mayHavePartialChanges: true));
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+        PlatformUsageBlock block = (await fixture.Blocks.ListActivePlatformBlocksAsync()).Single();
+        Assert.AreEqual(defaultProfile, block.PlatformProfileId);
+
+        var second = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("second-profile"),
+            20, autoCommit: false, profileId: secondProfile);
+        fixture.Clock.Advance(TimeSpan.FromHours(2));
+        fixture.SetUnknownUsage("codex", defaultProfile);
+        fixture.SetUsage("codex", secondProfile, 1);
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+        Assert.AreEqual(secondProfile, fixture.Platform("codex").Requests.Last().PlatformProfileId);
+        Assert.AreEqual(WorkItemStatus.TechnischErfolgreich, (await fixture.WorkItems.GetAsync(second.Id))!.Status);
+        Assert.AreEqual(1, (await fixture.Blocks.ListActivePlatformBlocksAsync()).Count,
+            "Usage des zweiten Profils darf die Sperre des Standardprofils nicht aufheben.");
+
+        fixture.SetUsage("codex", defaultProfile, 1);
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        PlatformExecutionRequest resume = fixture.Platform("codex").Requests.Last();
+        Assert.AreEqual(defaultProfile, resume.PlatformProfileId);
+        Assert.AreEqual("session-default", resume.SessionId);
+        Assert.AreEqual(WorkItemStatus.TechnischErfolgreich,
+            (await fixture.WorkItems.GetAsync(interrupted.Id))!.Status);
+    }
+
+    [TestMethod]
+    public async Task DifferentProfilesDoNotIncreasePlatformParallelism()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        PlatformProfileId secondProfile = await fixture.AddProfileAsync("codex", "codex2");
+        await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("profile-one"), 60,
+            profileId: fixture.Profile("codex"));
+        await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("profile-two"), 50,
+            profileId: secondProfile);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        fixture.Platform("codex").EnqueueExecution(async (_, token) =>
+        {
+            await release.Task.WaitAsync(token);
+            return new(PlatformExecutionOutcome.Succeeded, 0);
+        });
+
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await WaitUntilAsync(() => fixture.Platform("codex").ActiveExecutions == 1);
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
+        release.SetResult(true);
+        await fixture.Engine.WaitForIdleAsync();
+        Assert.AreEqual(1, fixture.Platform("codex").MaximumConcurrentExecutions);
+    }
+
+    [TestMethod]
+    public async Task DisabledProfileIsDiagnosedWithoutUsageReadOrDispatch()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        PlatformProfileId profileId = await fixture.AddProfileAsync("codex", "disabled");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("disabled-profile"),
+            50, profileId: profileId);
+        await fixture.SetProfileEnabledAsync(profileId, false);
+        int readsBefore = fixture.UsageReadCount("codex", profileId);
+
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
+
+        Assert.AreEqual(readsBefore, fixture.UsageReadCount("codex", profileId));
+        Assert.AreEqual(0, fixture.Platform("codex").Requests.Count);
+        Assert.IsTrue((await fixture.History.ListEventsAsync(item.Id)).Any(x =>
+            x.Data.GetValueOrDefault("reasonCode") == SchedulerReasonCodes.ProfileDisabled
+            && x.Data.GetValueOrDefault("platformProfileId") == profileId.ToString()));
+    }
+
+    [TestMethod]
+    public async Task MissingAndCrossPlatformProfilesAreSafelyDiagnosed()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex", "claude");
+        var missing = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("missing-profile"), 60);
+        var mismatch = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("wrong-profile"), 50);
+        PlatformProfileId missingProfileId = PlatformProfileId.New();
+        await fixture.CorruptStoredProfileAsync(missing.Id, missingProfileId);
+        await fixture.CorruptStoredProfileAsync(mismatch.Id, fixture.Profile("claude"));
+
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
+
+        Assert.AreEqual(0, fixture.Platform("codex").Requests.Count);
+        Assert.IsTrue((await fixture.History.ListEventsAsync(missing.Id)).Any(x =>
+            x.Data.GetValueOrDefault("reasonCode") == SchedulerReasonCodes.ProfileMissing));
+        Assert.IsTrue((await fixture.History.ListEventsAsync(mismatch.Id)).Any(x =>
+            x.Data.GetValueOrDefault("reasonCode") == SchedulerReasonCodes.ProfilePlatformMismatch));
+    }
+
+    [TestMethod]
+    public async Task SchedulerRejectsProfileChangeAfterAnAttemptStarted()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        PlatformProfileId secondProfile = await fixture.AddProfileAsync("codex", "codex2");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("changed-profile"),
+            50, autoCommit: false);
+        fixture.Platform("codex").EnqueueResult(new(PlatformExecutionOutcome.Failed, 2,
+            message: "retry"));
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+        Assert.IsTrue((await fixture.WorkItems.GetAsync(item.Id))!.HasExecutionStarted);
+
+        await fixture.CorruptStoredProfileAsync(item.Id, secondProfile);
+        fixture.Clock.Advance(TimeSpan.FromMinutes(1));
+
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
+        Assert.AreEqual(WorkItemStatus.InWarteschlange, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+        Assert.AreEqual(1, fixture.Platform("codex").Requests.Count);
+        Assert.IsTrue((await fixture.History.ListEventsAsync(item.Id)).Any(x =>
+            x.Data.GetValueOrDefault("reasonCode") == SchedulerReasonCodes.ProfileChanged));
+    }
+
+    [TestMethod]
     public async Task PausePreventsDispatchAndResumeContinues()
     {
         await using var fixture = await SchedulerFixture.CreateAsync("codex");
@@ -471,9 +596,6 @@ public sealed class SchedulerEngineTests
                 StringComparer.OrdinalIgnoreCase);
             var usageMap = platformIds.ToDictionary(id => id, id => new FakeUsageProvider(new(id)),
                 StringComparer.OrdinalIgnoreCase);
-            foreach (var id in platformIds)
-                usageMap[id].SetCurrent(UsageReadResult.Available(CreateSnapshot(id, clock.UtcNow, 1)));
-
             var platformRepository = new SqlitePlatformRepository(factory);
             var profileRepository = new SqlitePlatformProfileRepository(factory);
             var profileIds = new Dictionary<string, PlatformProfileId>(StringComparer.OrdinalIgnoreCase);
@@ -483,6 +605,8 @@ public sealed class SchedulerEngineTests
                     [new PlatformModel(new("gpt"), [new("medium")])]));
                 var profileId = (await profileRepository.GetDefaultAsync(new(id)))!.Id;
                 profileIds[id] = profileId;
+                usageMap[id].SetCurrent(profileId,
+                    UsageReadResult.Available(CreateSnapshot(id, profileId, clock.UtcNow, 1)));
             }
             await new SqliteUsagePolicyRepository(factory).ReplaceAsync(platformIds.Select(id =>
                 new UsagePolicy(new(id), [DayOfWeek.Friday], new TimeOnly(0, 0), new TimeOnly(23, 59),
@@ -498,7 +622,7 @@ public sealed class SchedulerEngineTests
             var aiRegistry = new AiPlatformRegistry(platformMap.Values);
             var usageRegistry = new UsageProviderRegistry(usageMap.Values);
             var git = new FakeGitService();
-            var engine = new SchedulerEngine(workItems, projects, platformRepository,
+            var engine = new SchedulerEngine(workItems, projects, platformRepository, profileRepository,
                 new SqliteUsagePolicyRepository(factory), snapshots, history, blocks, atomic,
                 aiRegistry, usageRegistry, new PlatformConfigurationValidator(aiRegistry, usageRegistry),
                 new PhysicalFileSystem(), git, clock,
@@ -510,7 +634,40 @@ public sealed class SchedulerEngineTests
 
         public FakeAiPlatform Platform(string id) => platformMap[id];
 
+        public PlatformProfileId Profile(string id) => profileIds[id];
+
         public int UsageReadCount(string id) => usageMap[id].ForceRefreshRequests.Count;
+
+        public int UsageReadCount(string id, PlatformProfileId profileId) =>
+            usageMap[id].ProfileRequests.Count(x => x == profileId);
+
+        public async Task<PlatformProfileId> AddProfileAsync(string platformId, string name)
+        {
+            var profile = new PlatformProfile(PlatformProfileId.New(), new(platformId), name, name,
+                Path.Combine(directory, "profiles", name));
+            await new SqlitePlatformProfileRepository(contextFactory).SaveAsync(profile);
+            SetUsage(platformId, profile.Id, 1);
+            return profile.Id;
+        }
+
+        public async Task SetProfileEnabledAsync(PlatformProfileId profileId, bool enabled)
+        {
+            var repository = new SqlitePlatformProfileRepository(contextFactory);
+            PlatformProfile current = (await repository.GetAsync(profileId))!;
+            await repository.SaveAsync(new PlatformProfile(current.Id, current.PlatformId, current.Name,
+                current.DisplayName, current.ConfigurationDirectory, enabled, current.IsDefault,
+                current.ShowUsageInStatusBar));
+        }
+
+        public async Task CorruptStoredProfileAsync(WorkItemId itemId, PlatformProfileId profileId)
+        {
+            await using var db = await contextFactory.CreateDbContextAsync();
+            await db.Database.OpenConnectionAsync();
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys=OFF;");
+            await db.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE WorkItems SET PlatformProfileId = {profileId.Value} WHERE Id = {itemId.Value}");
+            await db.Database.ExecuteSqlRawAsync("PRAGMA foreign_keys=ON;");
+        }
 
         public async Task SetPlatformEnabledAsync(string id, bool enabled)
         {
@@ -521,14 +678,23 @@ public sealed class SchedulerEngineTests
         }
 
         public void SetUsage(string id, decimal used) => usageMap[id].SetCurrent(
-            UsageReadResult.Available(CreateSnapshot(id, Clock.UtcNow, used)));
+            profileIds[id], UsageReadResult.Available(CreateSnapshot(id, profileIds[id], Clock.UtcNow, used)));
+
+        public void SetUsage(string id, PlatformProfileId profileId, decimal used) =>
+            usageMap[id].SetCurrent(profileId,
+                UsageReadResult.Available(CreateSnapshot(id, profileId, Clock.UtcNow, used)));
 
         public void SetUsage(string id, decimal used, TimeSpan resetIn, string? rateLimitReachedType = null) =>
-            usageMap[id].SetCurrent(UsageReadResult.Available(new UsageSnapshot(new(id), Clock.UtcNow, "fake",
+            usageMap[id].SetCurrent(profileIds[id], UsageReadResult.Available(new UsageSnapshot(new(id),
+                profileIds[id], Clock.UtcNow, "fake",
                 UsageQuality.Aktuell, [new UsageWindow("primary", new(used), Clock.UtcNow + resetIn, "fake",
                     Clock.UtcNow, UsageQuality.Aktuell, rateLimitReachedType)])));
 
-        public void SetUnknownUsage(string id) => usageMap[id].SetCurrent(UsageReadResult.Unknown("unbekannt"));
+        public void SetUnknownUsage(string id) => usageMap[id].SetCurrent(profileIds[id],
+            UsageReadResult.Unknown("unbekannt").ForProfile(profileIds[id]));
+
+        public void SetUnknownUsage(string id, PlatformProfileId profileId) => usageMap[id].SetCurrent(profileId,
+            UsageReadResult.Unknown("unbekannt").ForProfile(profileId));
 
         public async Task<ProjectId> AddProjectAsync(string name)
         {
@@ -543,12 +709,12 @@ public sealed class SchedulerEngineTests
         public string ProjectRoot(ProjectId id) => projectRoots[id];
 
         public async Task<WorkItem> AddWorkItemAsync(string platformId, ProjectId projectId, int priority,
-            bool autoCommit = true)
+            bool autoCommit = true, PlatformProfileId? profileId = null)
         {
             var prompt = Path.Combine(projectRoots[projectId], "docs", $"{Guid.NewGuid():N}.md");
             await File.WriteAllTextAsync(prompt, "Implementiere das Arbeitspaket.");
             var item = new WorkItem(WorkItemId.New(), prompt, new(priority), new(platformId),
-                profileIds[platformId], new("gpt"),
+                profileId ?? profileIds[platformId], new("gpt"),
                 new("medium"), new(prompt), autoCommit, Clock.UtcNow, projectId);
             item.TransitionTo(WorkItemStatus.InWarteschlange);
             await WorkItems.SaveAsync(item);
@@ -562,8 +728,9 @@ public sealed class SchedulerEngineTests
             try { Directory.Delete(directory, recursive: true); } catch (IOException) { }
         }
 
-        private static UsageSnapshot CreateSnapshot(string platformId, DateTimeOffset now, decimal used) =>
-            new(new(platformId), now, "fake", UsageQuality.Aktuell,
+        private static UsageSnapshot CreateSnapshot(string platformId, PlatformProfileId profileId,
+            DateTimeOffset now, decimal used) =>
+            new(new(platformId), profileId, now, "fake", UsageQuality.Aktuell,
                 [new UsageWindow("primary", new(used), now.AddHours(1), "fake", now, UsageQuality.Aktuell)]);
     }
 

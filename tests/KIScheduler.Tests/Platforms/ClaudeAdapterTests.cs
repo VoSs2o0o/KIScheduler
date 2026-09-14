@@ -242,7 +242,8 @@ public sealed class ClaudeAdapterTests
             Executable = "claude-execution",
             Usage = new ClaudeUsageOptions { Executable = "usage-probe" }
         });
-        var usage = new ClaudeUsageProvider(new CommandRegexReader(runner), new TestClock(), options);
+        var usage = new ClaudeUsageProvider(new CommandRegexReader(runner), new TestClock(), options,
+            platformProfileId: ProfileId);
         var platform = new ClaudePlatform(runner, options);
 
         UsageReadResult usageResult = await usage.ReadAsync(true);
@@ -287,7 +288,8 @@ public sealed class ClaudeAdapterTests
     {
         var runner = new RecordingRunner(Completed(0));
         var options = Options.Create(new ClaudeOptions { Usage = usage ?? new ClaudeUsageOptions() });
-        return new ClaudeUsageProvider(new CommandRegexReader(runner), new TestClock(), options);
+        return new ClaudeUsageProvider(new CommandRegexReader(runner), new TestClock(), options,
+            platformProfileId: ProfileId);
     }
 
     private static PlatformExecutionRequest Request() => new(ClaudePlatform.Id, ProfileId, new ModelId("sonnet"),

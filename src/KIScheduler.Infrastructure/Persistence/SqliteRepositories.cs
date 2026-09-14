@@ -33,7 +33,9 @@ public sealed class SqliteWorkItemRepository(IDbContextFactory<KischedulerDbCont
             && x.PlatformId == workItem.PlatformId.Value, cancellationToken);
         if (!profileMatches)
             throw new InvalidOperationException("Das Plattformprofil fehlt oder gehört nicht zur gewählten Plattform.");
-        if (existing is { HasExecutionStarted: true }
+        if (existing is not null
+            && (existing.HasExecutionStarted || existing.Status is (int)WorkItemStatus.Reserviert
+                or (int)WorkItemStatus.InBearbeitung)
             && existing.PlatformProfileId != workItem.PlatformProfileId.Value)
             throw new InvalidOperationException("Das Plattformprofil kann nach dem ersten Ausführungsbeginn nicht geändert werden.");
         if (existing is null) db.WorkItems.Add(PersistenceMappings.ToRow(workItem));
@@ -41,7 +43,8 @@ public sealed class SqliteWorkItemRepository(IDbContextFactory<KischedulerDbCont
         await db.SaveChangesAsync(cancellationToken);
     }
 
-    public async Task<SchedulerLease?> TryAcquireLeaseAsync(WorkItemId workItemId, string ownerId,
+    public async Task<SchedulerLease?> TryAcquireLeaseAsync(WorkItemId workItemId,
+        PlatformProfileId expectedPlatformProfileId, string ownerId,
         DateTimeOffset acquiredAtUtc, TimeSpan duration, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(ownerId);
@@ -59,6 +62,7 @@ public sealed class SqliteWorkItemRepository(IDbContextFactory<KischedulerDbCont
                 UPDATE WorkItems
                 SET Status = {(int)WorkItemStatus.Reserviert}
                 WHERE Id = {workItemId.Value}
+                  AND PlatformProfileId = {expectedPlatformProfileId.Value}
                   AND Status IN ({(int)WorkItemStatus.InWarteschlange}, {(int)WorkItemStatus.WartetAufUsage})
                   AND NOT EXISTS (
                       SELECT 1

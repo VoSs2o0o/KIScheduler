@@ -30,6 +30,10 @@ public sealed class SqliteStartupRecoveryRepository(
         foreach (var row in interrupted)
         {
             var previousStatus = (WorkItemStatus)row.Status;
+            var latestPersistedAttempt = await db.ExecutionAttempts.AsNoTracking()
+                .Where(x => x.WorkItemId == row.Id)
+                .OrderByDescending(x => x.SequenceNumber)
+                .FirstOrDefaultAsync(cancellationToken);
             ExecutionAttemptRow? recoveryAttempt = null;
             if (previousStatus == WorkItemStatus.InBearbeitung)
             {
@@ -50,6 +54,7 @@ public sealed class SqliteStartupRecoveryRepository(
                     StartedAtUtc = startedAt,
                     CompletedAtUtc = detectedAtUtc,
                     Result = (int)ExecutionAttemptResult.Unterbrochen,
+                    SessionId = latestPersistedAttempt?.SessionId,
                     Diagnostic = "Die Anwendung wurde beendet, bevor ein Ausführungsergebnis gespeichert werden konnte."
                 };
                 db.ExecutionAttempts.Add(recoveryAttempt);
@@ -71,10 +76,7 @@ public sealed class SqliteStartupRecoveryRepository(
                 }
             }
 
-            var latestAttempt = await db.ExecutionAttempts.AsNoTracking()
-                .Where(x => x.WorkItemId == row.Id && (recoveryAttempt == null || x.Id != recoveryAttempt.Id))
-                .OrderByDescending(x => x.SequenceNumber)
-                .FirstOrDefaultAsync(cancellationToken);
+            var latestAttempt = latestPersistedAttempt;
             var eventRows = await db.ExecutionEvents.AsNoTracking()
                 .Where(x => x.WorkItemId == row.Id)
                 .ToListAsync(cancellationToken);
@@ -84,6 +86,7 @@ public sealed class SqliteStartupRecoveryRepository(
                 ["reasonCode"] = "recovery.orphaned_execution",
                 ["previousStatus"] = previousStatus.ToString(),
                 ["platformId"] = row.PlatformId,
+                ["platformProfileId"] = row.PlatformProfileId.ToString("D"),
                 ["modelId"] = row.ModelId,
                 ["projectId"] = row.ProjectId?.ToString() ?? "",
                 ["recoveryOwnerId"] = recoveryOwnerId.Trim(),
@@ -95,7 +98,8 @@ public sealed class SqliteStartupRecoveryRepository(
             if (latestEvent is not null) data["lastEventId"] = latestEvent.Id.ToString();
 
             db.ExecutionEvents.Add(PersistenceMappings.ToRow(new ExecutionEvent(
-                Guid.NewGuid(), new WorkItemId(row.Id), detectedAtUtc, ExecutionEventSeverity.Error,
+                Guid.NewGuid(), new WorkItemId(row.Id), new PlatformProfileId(row.PlatformProfileId),
+                detectedAtUtc, ExecutionEventSeverity.Error,
                 "recovery.interrupted",
                 $"Verwaister Zustand '{previousStatus}' wurde beim Start erkannt und sicher auf 'Unterbrochen' gesetzt.",
                 recoveryAttempt is null ? null : new ExecutionAttemptId(recoveryAttempt.Id), data)));

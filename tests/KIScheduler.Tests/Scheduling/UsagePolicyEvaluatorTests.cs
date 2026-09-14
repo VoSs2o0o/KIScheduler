@@ -146,7 +146,7 @@ public sealed class UsagePolicyEvaluatorTests
             endSprintMaxUsedPercent: endSprintMax.HasValue ? new UsagePercent(endSprintMax.Value) : null);
 
     private static UsageSnapshot Snapshot(DateTimeOffset readAt, params UsageWindow[] windows) =>
-        new(Codex, readAt, "fake", UsageQuality.Aktuell, windows);
+        new(Codex, PlatformProfileId.New(), readAt, "fake", UsageQuality.Aktuell, windows);
 
     private static UsageWindow Window(string name, decimal used, DateTimeOffset readAt, DateTimeOffset? resetAt) =>
         new(name, new(used), resetAt, "fake", readAt, UsageQuality.Aktuell);

@@ -16,6 +16,10 @@ public static class SchedulerReasonCodes
     public const string ProjectHeld = "project.execution_held";
     public const string PlatformBusy = "platform.busy";
     public const string PlatformDisabled = "platform.disabled";
+    public const string ProfileMissing = "profile.missing";
+    public const string ProfileDisabled = "profile.disabled";
+    public const string ProfilePlatformMismatch = "profile.platform_mismatch";
+    public const string ProfileChanged = "profile.changed_after_selection";
     public const string ProjectBusy = "project.busy";
     public const string ReservationConflict = "scheduler.reservation_conflict";
     public const string Reserved = "scheduler.reserved";

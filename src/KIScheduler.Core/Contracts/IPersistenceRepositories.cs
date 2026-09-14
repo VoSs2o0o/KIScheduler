@@ -37,10 +37,10 @@ public interface IUsagePolicyRepository
 
 public interface IUsageSnapshotRepository
 {
-    Task<UsageSnapshot?> GetLatestAsync(PlatformId platformId,
+    Task<UsageSnapshot?> GetLatestAsync(PlatformProfileId platformProfileId,
         CancellationToken cancellationToken = default);
     Task SaveAsync(UsageSnapshot snapshot, CancellationToken cancellationToken = default);
-    Task InvalidateAsync(PlatformId platformId, CancellationToken cancellationToken = default);
+    Task InvalidateAsync(PlatformProfileId platformProfileId, CancellationToken cancellationToken = default);
 }
 
 public interface IExecutionHistoryRepository

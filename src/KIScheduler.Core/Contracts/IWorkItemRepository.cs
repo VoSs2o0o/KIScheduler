@@ -14,6 +14,7 @@ public interface IWorkItemRepository
 
     Task<SchedulerLease?> TryAcquireLeaseAsync(
         WorkItemId workItemId,
+        PlatformProfileId expectedPlatformProfileId,
         string ownerId,
         DateTimeOffset acquiredAtUtc,
         TimeSpan duration,

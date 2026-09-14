@@ -29,6 +29,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
     private readonly IWorkItemRepository workItems;
     private readonly IProjectRepository projects;
     private readonly IPlatformRepository platformDefinitions;
+    private readonly IPlatformProfileRepository platformProfiles;
     private readonly IUsagePolicyRepository usagePolicies;
     private readonly IUsageSnapshotRepository usageSnapshots;
     private readonly IExecutionHistoryRepository history;
@@ -54,7 +55,8 @@ public sealed class SchedulerEngine : ISchedulerEngine
     private volatile bool stopped;
 
     public SchedulerEngine(IWorkItemRepository workItems, IProjectRepository projects,
-        IPlatformRepository platformDefinitions, IUsagePolicyRepository usagePolicies,
+        IPlatformRepository platformDefinitions, IPlatformProfileRepository platformProfiles,
+        IUsagePolicyRepository usagePolicies,
         IUsageSnapshotRepository usageSnapshots, IExecutionHistoryRepository history,
         IExecutionBlockRepository blocks, IAtomicExecutionRepository atomicExecution,
         IAiPlatformRegistry platforms, IUsageProviderRegistry usageProviders,
@@ -65,6 +67,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
         this.workItems = workItems ?? throw new ArgumentNullException(nameof(workItems));
         this.projects = projects ?? throw new ArgumentNullException(nameof(projects));
         this.platformDefinitions = platformDefinitions ?? throw new ArgumentNullException(nameof(platformDefinitions));
+        this.platformProfiles = platformProfiles ?? throw new ArgumentNullException(nameof(platformProfiles));
         this.usagePolicies = usagePolicies ?? throw new ArgumentNullException(nameof(usagePolicies));
         this.usageSnapshots = usageSnapshots ?? throw new ArgumentNullException(nameof(usageSnapshots));
         this.history = history ?? throw new ArgumentNullException(nameof(history));
@@ -110,7 +113,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
         if (item is null || !WorkItemStateMachine.CanTransition(item.Status, WorkItemStatus.Abgebrochen)) return false;
         item.TransitionTo(WorkItemStatus.Abgebrochen);
         await workItems.SaveAsync(item, cancellationToken).ConfigureAwait(false);
-        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, clock.UtcNow,
             ExecutionEventSeverity.Information, "execution.cancelled", "Auftrag wurde manuell abgebrochen.", data:
             new Dictionary<string, string> { ["reasonCode"] = "execution.cancelled_by_user" }), cancellationToken)
             .ConfigureAwait(false);
@@ -132,13 +135,30 @@ public sealed class SchedulerEngine : ISchedulerEngine
 
             var configuredPlatforms = (await platformDefinitions.ListAsync(cancellationToken).ConfigureAwait(false))
                 .ToDictionary(x => x.Id.Value, StringComparer.OrdinalIgnoreCase);
+            var configuredProfiles = (await platformProfiles.ListAsync(cancellationToken: cancellationToken)
+                .ConfigureAwait(false)).ToDictionary(x => x.Id);
             var allPolicies = await usagePolicies.ListAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
             var activePlatformBlocks = (await blocks.ListActivePlatformBlocksAsync(cancellationToken).ConfigureAwait(false)).ToList();
             var activeProjectHolds = await blocks.ListActiveProjectHoldsAsync(cancellationToken).ConfigureAwait(false);
             var enabledCandidates = candidates.Where(item => configuredPlatforms.TryGetValue(item.PlatformId.Value,
-                out var definition) && definition.Enabled).ToList();
-            var usageByPlatform = await ReadFreshUsageAsync(enabledCandidates, cancellationToken).ConfigureAwait(false);
-            await ReleaseEligiblePlatformBlocksAsync(activePlatformBlocks, allPolicies, usageByPlatform, now, cancellationToken)
+                    out var definition) && definition.Enabled
+                && configuredProfiles.TryGetValue(item.PlatformProfileId, out var profile)
+                && profile.Enabled && PlatformEquals(profile.PlatformId, item.PlatformId)).ToList();
+            var stableProfileAssignments = new HashSet<WorkItemId>();
+            foreach (var item in enabledCandidates)
+            {
+                if (await HasStableStartedProfileAssignmentAsync(item, cancellationToken).ConfigureAwait(false))
+                {
+                    stableProfileAssignments.Add(item.Id);
+                    continue;
+                }
+
+                await RecordDecisionAsync(item, SchedulerReasonCodes.ProfileChanged, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            enabledCandidates = enabledCandidates.Where(x => stableProfileAssignments.Contains(x.Id)).ToList();
+            var usageByProfile = await ReadFreshUsageAsync(enabledCandidates, cancellationToken).ConfigureAwait(false);
+            await ReleaseEligiblePlatformBlocksAsync(activePlatformBlocks, allPolicies, usageByProfile, now, cancellationToken)
                 .ConfigureAwait(false);
             activePlatformBlocks = activePlatformBlocks.Where(block => block.IsActive).ToList();
 
@@ -167,6 +187,25 @@ public sealed class SchedulerEngine : ISchedulerEngine
                         .ConfigureAwait(false);
                     continue;
                 }
+                if (!configuredProfiles.TryGetValue(item.PlatformProfileId, out var configuredProfile))
+                {
+                    await RecordDecisionAsync(item, SchedulerReasonCodes.ProfileMissing, cancellationToken)
+                        .ConfigureAwait(false);
+                    continue;
+                }
+                if (!PlatformEquals(configuredProfile.PlatformId, item.PlatformId))
+                {
+                    await RecordDecisionAsync(item, SchedulerReasonCodes.ProfilePlatformMismatch, cancellationToken)
+                        .ConfigureAwait(false);
+                    continue;
+                }
+                if (!configuredProfile.Enabled)
+                {
+                    await RecordDecisionAsync(item, SchedulerReasonCodes.ProfileDisabled, cancellationToken)
+                        .ConfigureAwait(false);
+                    continue;
+                }
+                if (!stableProfileAssignments.Contains(item.Id)) continue;
                 if (IsPlatformRunning(item.PlatformId))
                 {
                     await RecordDecisionAsync(item, SchedulerReasonCodes.PlatformBusy, cancellationToken).ConfigureAwait(false);
@@ -188,14 +227,14 @@ public sealed class SchedulerEngine : ISchedulerEngine
                     continue;
                 }
 
-                if (activePlatformBlocks.Any(block => PlatformEquals(block.PlatformId, item.PlatformId)))
+                if (activePlatformBlocks.Any(block => block.PlatformProfileId == item.PlatformProfileId))
                 {
                     await MoveToWaitingForUsageAsync(item, SchedulerReasonCodes.PlatformBlocked, cancellationToken)
                         .ConfigureAwait(false);
                     continue;
                 }
 
-                usageByPlatform.TryGetValue(item.PlatformId.Value, out var usage);
+                usageByProfile.TryGetValue(item.PlatformProfileId, out var usage);
                 var usageDecision = usageEvaluator.Evaluate(item.PlatformId, item.ModelId, allPolicies,
                     usage?.Snapshot, now);
                 if (!usageDecision.IsAllowed)
@@ -225,7 +264,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
                 }
 
                 if (paused || stopped) break;
-                var lease = await workItems.TryAcquireLeaseAsync(item.Id, ownerId, now,
+                var lease = await workItems.TryAcquireLeaseAsync(item.Id, item.PlatformProfileId, ownerId, now,
                     options.LeaseDuration, cancellationToken).ConfigureAwait(false);
                 if (lease is null)
                 {
@@ -283,39 +322,51 @@ public sealed class SchedulerEngine : ISchedulerEngine
         cycleGate.Dispose();
     }
 
-    private async Task<Dictionary<string, UsageReadResult>> ReadFreshUsageAsync(
+    private async Task<Dictionary<PlatformProfileId, UsageReadResult>> ReadFreshUsageAsync(
         IReadOnlyCollection<WorkItem> candidates, CancellationToken cancellationToken)
     {
-        var result = new ConcurrentDictionary<string, UsageReadResult>(StringComparer.OrdinalIgnoreCase);
-        var ids = candidates.Select(item => item.PlatformId).DistinctBy(id => id.Value, StringComparer.OrdinalIgnoreCase);
-        await Task.WhenAll(ids.Select(async id =>
+        var result = new ConcurrentDictionary<PlatformProfileId, UsageReadResult>();
+        var assignments = candidates.DistinctBy(item => item.PlatformProfileId)
+            .Select(item => (item.PlatformId, item.PlatformProfileId));
+        await Task.WhenAll(assignments.Select(async assignment =>
         {
-            var provider = usageProviders.GetRequired(id);
+            var provider = usageProviders.GetRequired(assignment.PlatformId);
             UsageReadResult read;
             try
             {
-                read = await provider.ReadAsync(forceRefresh: true, cancellationToken).ConfigureAwait(false);
+                read = await provider.ReadAsync(assignment.PlatformProfileId, forceRefresh: true, cancellationToken)
+                    .ConfigureAwait(false);
+                if (read.PlatformProfileId != assignment.PlatformProfileId
+                    || (read.Snapshot is { } returnedSnapshot
+                        && (!PlatformEquals(returnedSnapshot.PlatformId, assignment.PlatformId)
+                            || returnedSnapshot.PlatformProfileId != assignment.PlatformProfileId)))
+                    read = new UsageReadResult(UsageReadStatus.ProviderUnavailable,
+                        message: "Der Usage-Provider lieferte Daten für ein anderes Plattformprofil.",
+                        platformProfileId: assignment.PlatformProfileId);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
-                read = new UsageReadResult(UsageReadStatus.ProviderUnavailable, message: exception.Message);
+                read = new UsageReadResult(UsageReadStatus.ProviderUnavailable, message: exception.Message,
+                    platformProfileId: assignment.PlatformProfileId);
             }
             if (read.Snapshot is { } snapshot)
                 await usageSnapshots.SaveAsync(snapshot, cancellationToken).ConfigureAwait(false);
-            result[id.Value] = read;
+            result[assignment.PlatformProfileId] = read;
         })).ConfigureAwait(false);
-        return result.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        return result.ToDictionary(pair => pair.Key, pair => pair.Value);
     }
 
     private async Task ReleaseEligiblePlatformBlocksAsync(List<PlatformUsageBlock> activeBlocks,
-        IReadOnlyCollection<UsagePolicy> policies, IReadOnlyDictionary<string, UsageReadResult> usageByPlatform,
+        IReadOnlyCollection<UsagePolicy> policies,
+        IReadOnlyDictionary<PlatformProfileId, UsageReadResult> usageByProfile,
         DateTimeOffset now, CancellationToken cancellationToken)
     {
         foreach (var block in activeBlocks)
         {
-            if (!usageByPlatform.TryGetValue(block.PlatformId.Value, out var read) || read.Snapshot is null) continue;
+            if (!usageByProfile.TryGetValue(block.PlatformProfileId, out var read) || read.Snapshot is null) continue;
             var trigger = await workItems.GetAsync(block.TriggeringWorkItemId, cancellationToken).ConfigureAwait(false);
-            if (trigger is null) continue;
+            if (trigger is null || trigger.PlatformProfileId != block.PlatformProfileId
+                || !PlatformEquals(trigger.PlatformId, block.PlatformId)) continue;
             var decision = usageEvaluator.Evaluate(trigger.PlatformId, trigger.ModelId, policies, read.Snapshot, now);
             if (!decision.IsAllowed || !decision.IsFreshSnapshot) continue;
             block.Release(now, "Frischer zulässiger Usage-Snapshot.", isManual: false,
@@ -336,8 +387,20 @@ public sealed class SchedulerEngine : ISchedulerEngine
         // after a crash or an ambiguous failure must first be reviewed and released by a person.
         var interrupted = attempts.LastOrDefault();
         var available = interrupted?.Result == ExecutionAttemptResult.UsageExceeded
+            && PlatformEquals(interrupted.PlatformId, item.PlatformId)
+            && interrupted.PlatformProfileId == item.PlatformProfileId
             && adapter.Capabilities.SupportsResume && !string.IsNullOrWhiteSpace(interrupted.SessionId);
         return (true, available, available ? interrupted!.SessionId : null);
+    }
+
+    private async Task<bool> HasStableStartedProfileAssignmentAsync(WorkItem item,
+        CancellationToken cancellationToken)
+    {
+        if (!item.HasExecutionStarted) return true;
+        var attempts = await history.ListAttemptsAsync(item.Id, cancellationToken).ConfigureAwait(false);
+        return attempts.Count > 0 && attempts.All(attempt =>
+            PlatformEquals(attempt.PlatformId, item.PlatformId)
+            && attempt.PlatformProfileId == item.PlatformProfileId);
     }
 
     private async Task ExecuteReservedAsync(WorkItem item, SchedulerLease lease, string? resumeSessionId,
@@ -350,6 +413,19 @@ public sealed class SchedulerEngine : ISchedulerEngine
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(shutdown.Token, itemCancellationToken);
             linked.CancelAfter(options.ExecutionTimeout);
             var cancellationToken = linked.Token;
+
+            var persistedReservation = await workItems.GetAsync(item.Id, cancellationToken).ConfigureAwait(false);
+            if (persistedReservation is null) return;
+            if (persistedReservation.PlatformProfileId != item.PlatformProfileId
+                || !PlatformEquals(persistedReservation.PlatformId, item.PlatformId))
+            {
+                persistedReservation.TransitionTo(WorkItemStatus.MenschlichePruefung);
+                await workItems.SaveAsync(persistedReservation, CancellationToken.None).ConfigureAwait(false);
+                await RecordDecisionAsync(persistedReservation, SchedulerReasonCodes.ProfileChanged,
+                    CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
+            item = persistedReservation;
 
             var project = await projects.GetAsync(item.ProjectId!.Value, cancellationToken).ConfigureAwait(false);
             if (project is null)
@@ -384,6 +460,17 @@ public sealed class SchedulerEngine : ISchedulerEngine
 
             var definition = await platformDefinitions.GetAsync(item.PlatformId, cancellationToken).ConfigureAwait(false)
                 ?? throw new PlatformConfigurationException($"Plattform '{item.PlatformId.Value}' ist nicht konfiguriert.");
+            var profile = await platformProfiles.GetAsync(item.PlatformProfileId, cancellationToken).ConfigureAwait(false);
+            if (profile is null || !profile.Enabled || !PlatformEquals(profile.PlatformId, item.PlatformId))
+            {
+                item.TransitionTo(WorkItemStatus.MenschlichePruefung);
+                await workItems.SaveAsync(item, CancellationToken.None).ConfigureAwait(false);
+                await RecordDecisionAsync(item, profile is null ? SchedulerReasonCodes.ProfileMissing
+                    : !PlatformEquals(profile.PlatformId, item.PlatformId)
+                        ? SchedulerReasonCodes.ProfilePlatformMismatch : SchedulerReasonCodes.ProfileDisabled,
+                    CancellationToken.None).ConfigureAwait(false);
+                return;
+            }
             var adapter = platforms.GetRequired(item.PlatformId);
             var prompt = await fileSystem.ReadAllTextAsync(promptPath, cancellationToken).ConfigureAwait(false);
             var request = new PlatformExecutionRequest(item.PlatformId, item.PlatformProfileId,
@@ -427,7 +514,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
 
             foreach (var platformEvent in result.Events)
             {
-                await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+                await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, clock.UtcNow,
                     ExecutionEventSeverity.Information, $"platform.{platformEvent.Type}",
                     SensitiveDataRedactor.Redact(platformEvent.Json), data: new Dictionary<string, string>
                     {
@@ -489,13 +576,15 @@ public sealed class SchedulerEngine : ISchedulerEngine
                 await EnsureProjectHoldAsync(item,
                     "Unterbrochene oder unklare Ausführung; der Projektarbeitsbaum kann teilweise verändert sein.",
                     completedAt).ConfigureAwait(false);
-            await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, completedAt,
+            await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, completedAt,
                 attemptResult is ExecutionAttemptResult.TechnischErfolgreich or ExecutionAttemptResult.ErfolgreichMitWarnung
                     ? ExecutionEventSeverity.Information : ExecutionEventSeverity.Error,
                 "execution.completed", diagnostic ?? attemptResult.ToString(), attempt.Id,
                 new Dictionary<string, string>
                 {
                     ["reasonCode"] = $"execution.{attemptResult.ToString().ToLowerInvariant()}",
+                    ["platformId"] = item.PlatformId.Value,
+                    ["platformProfileId"] = item.PlatformProfileId.ToString(),
                     ["outcome"] = result.Outcome.ToString(),
                     ["normalRetryCount"] = item.NormalRetryCount.ToString(),
                     ["maximumAttempts"] = options.MaximumAttempts.ToString(),
@@ -503,12 +592,14 @@ public sealed class SchedulerEngine : ISchedulerEngine
                 }), CancellationToken.None).ConfigureAwait(false);
 
             if (retryAtUtc.HasValue)
-                await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, completedAt,
+                await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, completedAt,
                     ExecutionEventSeverity.Warning, "execution.retry_scheduled",
                     $"Wiederholungsversuch {item.NormalRetryCount + 1} von {options.MaximumAttempts} ist ab {retryAtUtc:O} zulässig.",
                     attempt.Id, new Dictionary<string, string>
                     {
                         ["reasonCode"] = "execution.retry_backoff",
+                        ["platformId"] = item.PlatformId.Value,
+                        ["platformProfileId"] = item.PlatformProfileId.ToString(),
                         ["retryAtUtc"] = retryAtUtc.Value.ToString("O"),
                         ["failedAttemptCount"] = item.NormalRetryCount.ToString()
                     }), CancellationToken.None).ConfigureAwait(false);
@@ -523,7 +614,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
             else if (item.Status == WorkItemStatus.InBearbeitung)
                 item.CompleteCurrentAttempt(ExecutionAttemptResult.Abgebrochen);
             await workItems.SaveAsync(item, CancellationToken.None).ConfigureAwait(false);
-            await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+            await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, clock.UtcNow,
                 ExecutionEventSeverity.Information, "execution.cancelled", "Auftrag wurde manuell abgebrochen.", data:
                 new Dictionary<string, string> { ["reasonCode"] = "execution.cancelled_by_user" }),
                 CancellationToken.None).ConfigureAwait(false);
@@ -540,7 +631,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
                     clock.UtcNow).ConfigureAwait(false);
             }
             await workItems.SaveAsync(item, CancellationToken.None).ConfigureAwait(false);
-            await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+            await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, clock.UtcNow,
                 ExecutionEventSeverity.Warning, "execution.interrupted",
                 "Auftrag wurde beim kontrollierten Herunterfahren unterbrochen.", data:
                 new Dictionary<string, string> { ["reasonCode"] = "execution.shutdown" }),
@@ -561,7 +652,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
                     "Fehler nach Ausführungsbeginn; der Projektarbeitsbaum kann teilweise verändert sein.",
                     clock.UtcNow).ConfigureAwait(false);
             }
-            await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+            await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, clock.UtcNow,
                 ExecutionEventSeverity.Error, "execution.preparation_failed",
                 SensitiveDataRedactor.Redact(exception.Message), attempt?.Id,
                 new Dictionary<string, string> { ["reasonCode"] = "execution.preparation_failed" }),
@@ -578,25 +669,30 @@ public sealed class SchedulerEngine : ISchedulerEngine
     {
         var message = SensitiveDataRedactor.Redact(
             result.Message ?? "Usage-Limit während der Ausführung erreicht.");
-        var executionEvent = new ExecutionEvent(Guid.NewGuid(), item.Id, now, ExecutionEventSeverity.Error,
+        var executionEvent = new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, now,
+            ExecutionEventSeverity.Error,
             "usage_exceeded", message, attempt.Id, new Dictionary<string, string>
             {
                 ["reasonCode"] = SchedulerReasonCodes.ServerLimitReached,
                 ["platformId"] = item.PlatformId.Value,
+                ["platformProfileId"] = item.PlatformProfileId.ToString(),
                 ["autoCommit"] = "skipped"
             });
-        var platformBlock = new PlatformUsageBlock(Guid.NewGuid(), item.PlatformId, item.Id, attempt.Id, message, now);
+        var platformBlock = new PlatformUsageBlock(Guid.NewGuid(), item.PlatformId, item.PlatformProfileId,
+            item.Id, attempt.Id, message, now);
         var projectHold = new ProjectExecutionHold(Guid.NewGuid(), item.ProjectId!.Value, item.Id,
             item.PlatformId, "Auftrag kann den Projektarbeitsbaum teilweise verändert haben.", now);
         await atomicExecution.PersistUsageExceededAsync(
             new UsageExceededPersistenceRequest(item, attempt, executionEvent, platformBlock, projectHold),
             CancellationToken.None).ConfigureAwait(false);
-        await usageSnapshots.InvalidateAsync(item.PlatformId, CancellationToken.None).ConfigureAwait(false);
+        await usageSnapshots.InvalidateAsync(item.PlatformProfileId, CancellationToken.None).ConfigureAwait(false);
         try
         {
-            var fresh = await usageProviders.GetRequired(item.PlatformId).ReadAsync(forceRefresh: true, CancellationToken.None)
-                .ConfigureAwait(false);
-            if (fresh.Snapshot is not null)
+            var fresh = await usageProviders.GetRequired(item.PlatformId)
+                .ReadAsync(item.PlatformProfileId, forceRefresh: true, CancellationToken.None).ConfigureAwait(false);
+            if (fresh.PlatformProfileId == item.PlatformProfileId && fresh.Snapshot is { } snapshot
+                && snapshot.PlatformProfileId == item.PlatformProfileId
+                && PlatformEquals(snapshot.PlatformId, item.PlatformId))
                 await usageSnapshots.SaveAsync(fresh.Snapshot, CancellationToken.None).ConfigureAwait(false);
         }
         catch
@@ -658,9 +754,14 @@ public sealed class SchedulerEngine : ISchedulerEngine
     }
 
     private Task RecordDecisionAsync(WorkItem item, string reasonCode, CancellationToken cancellationToken) =>
-        history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+        history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, clock.UtcNow,
             ExecutionEventSeverity.Information, "scheduler.decision", reasonCode, data:
-            new Dictionary<string, string> { ["reasonCode"] = reasonCode }), cancellationToken);
+            new Dictionary<string, string>
+            {
+                ["reasonCode"] = reasonCode,
+                ["platformId"] = item.PlatformId.Value,
+                ["platformProfileId"] = item.PlatformProfileId.ToString()
+            }), cancellationToken);
 
     private Task RecordGitStatusAsync(WorkItem item, string eventType, GitInspectionResult result,
         CancellationToken cancellationToken)
@@ -678,7 +779,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
             data["isClean"] = snapshot.IsClean.ToString();
             data["changeCount"] = snapshot.StatusLines.Count.ToString();
         }
-        return history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+        return history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, clock.UtcNow,
             result.IsReady ? ExecutionEventSeverity.Information :
                 item.AutoCommit ? ExecutionEventSeverity.Error : ExecutionEventSeverity.Warning,
             eventType, result.Message, data: data), cancellationToken);
@@ -695,7 +796,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
             ["afterChangeCount"] = result.After?.StatusLines.Count.ToString() ?? "unknown"
         };
         if (result.CommitId is not null) data["commitId"] = result.CommitId;
-        return history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, clock.UtcNow,
+        return history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, clock.UtcNow,
             result.Status switch
             {
                 GitCommitStatus.Committed => ExecutionEventSeverity.Information,

@@ -6,14 +6,17 @@ namespace KIScheduler.Infrastructure.Persistence;
 
 public sealed class SqliteUsageSnapshotRepository(IDbContextFactory<KischedulerDbContext> contextFactory) : IUsageSnapshotRepository
 {
-    public async Task<UsageSnapshot?> GetLatestAsync(PlatformId platformId, CancellationToken cancellationToken = default)
+    public async Task<UsageSnapshot?> GetLatestAsync(PlatformProfileId platformProfileId,
+        CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        var snapshots = await db.UsageSnapshots.AsNoTracking().Where(x => x.PlatformId == platformId.Value).ToListAsync(cancellationToken);
+        var snapshots = await db.UsageSnapshots.AsNoTracking()
+            .Where(x => x.PlatformProfileId == platformProfileId.Value).ToListAsync(cancellationToken);
         var row = snapshots.MaxBy(x => x.ReadAtUtc);
         if (row is null) return null;
         var windows = await db.UsageWindows.AsNoTracking().Where(x => x.SnapshotId == row.Id).ToListAsync(cancellationToken);
-        return new UsageSnapshot(new(row.PlatformId), row.ReadAtUtc, row.Source, (UsageQuality)row.Quality,
+        return new UsageSnapshot(new(row.PlatformId), new(row.PlatformProfileId), row.ReadAtUtc,
+            row.Source, (UsageQuality)row.Quality,
             windows.Select(x => new UsageWindow(x.Name, new(x.UsedPercent), x.ResetAtUtc, x.Source, x.ReadAtUtc,
                 (UsageQuality)x.Quality, x.RateLimitReachedType,
                 x.WindowDurationTicks.HasValue ? TimeSpan.FromTicks(x.WindowDurationTicks.Value) : null,
@@ -30,6 +33,7 @@ public sealed class SqliteUsageSnapshotRepository(IDbContextFactory<KischedulerD
         {
             Id = id,
             PlatformId = snapshot.PlatformId.Value,
+            PlatformProfileId = snapshot.PlatformProfileId.Value,
             ReadAtUtc = snapshot.ReadAtUtc,
             Source = snapshot.Source,
             Quality = (int)snapshot.Quality
@@ -53,10 +57,12 @@ public sealed class SqliteUsageSnapshotRepository(IDbContextFactory<KischedulerD
         await transaction.CommitAsync(cancellationToken);
     }
 
-    public async Task InvalidateAsync(PlatformId platformId, CancellationToken cancellationToken = default)
+    public async Task InvalidateAsync(PlatformProfileId platformProfileId,
+        CancellationToken cancellationToken = default)
     {
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
-        var ids = await db.UsageSnapshots.Where(x => x.PlatformId == platformId.Value).Select(x => x.Id).ToListAsync(cancellationToken);
+        var ids = await db.UsageSnapshots.Where(x => x.PlatformProfileId == platformProfileId.Value)
+            .Select(x => x.Id).ToListAsync(cancellationToken);
         await db.UsageSnapshots.Where(x => ids.Contains(x.Id)).ExecuteDeleteAsync(cancellationToken);
     }
 }
@@ -198,6 +204,13 @@ public sealed class SqliteAtomicExecutionRepository(IDbContextFactory<Kischedule
         if (request.WorkItem.Id != request.Attempt.WorkItemId || request.WorkItem.Id != request.Event.WorkItemId ||
             request.WorkItem.Id != request.PlatformBlock.TriggeringWorkItemId || request.WorkItem.Id != request.ProjectHold.TriggeringWorkItemId)
             throw new ArgumentException("Alle Datensätze müssen zum selben Auftrag gehören.", nameof(request));
+        if (request.WorkItem.PlatformId != request.Attempt.PlatformId
+            || request.WorkItem.PlatformId != request.PlatformBlock.PlatformId
+            || request.WorkItem.PlatformProfileId != request.Attempt.PlatformProfileId
+            || request.WorkItem.PlatformProfileId != request.Event.PlatformProfileId
+            || request.WorkItem.PlatformProfileId != request.PlatformBlock.PlatformProfileId)
+            throw new ArgumentException("Versuch und Usage-Sperre müssen zur Plattform- und Profilzuordnung des Auftrags gehören.",
+                nameof(request));
 
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);

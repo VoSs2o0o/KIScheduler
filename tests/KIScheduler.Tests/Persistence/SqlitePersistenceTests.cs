@@ -60,13 +60,15 @@ public sealed class SqlitePersistenceTests
             item.PlatformProfileId, item.ModelId,
             item.Effort, now, now.AddMinutes(1), ExecutionAttemptResult.TechnischErfolgreich, 0, "session-1");
         await history.AddAttemptAsync(attempt);
-        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, now, ExecutionEventSeverity.Information,
+        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, now,
+            ExecutionEventSeverity.Information,
             "completed", "Auftrag abgeschlossen", attempt.Id, new Dictionary<string, string> { ["source"] = "test" }));
         var secondAttempt = new ExecutionAttempt(ExecutionAttemptId.New(), item.Id, 2, item.PlatformId,
             item.PlatformProfileId, item.ModelId,
             item.Effort, now.AddMinutes(2), now.AddMinutes(3), ExecutionAttemptResult.Fehlgeschlagen, 2);
         await history.AddAttemptAsync(secondAttempt);
-        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, now.AddMinutes(3), ExecutionEventSeverity.Error,
+        await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId,
+            now.AddMinutes(3), ExecutionEventSeverity.Error,
             "failed", "Zweiter Versuch fehlgeschlagen", secondAttempt.Id));
 
         var restartedItems = new SqliteWorkItemRepository(factory!);
@@ -184,6 +186,69 @@ public sealed class SqlitePersistenceTests
     }
 
     [TestMethod]
+    public async Task UsageSnapshotsAreStoredAndInvalidatedPerProfile()
+    {
+        var profiles = new SqlitePlatformProfileRepository(factory!);
+        var second = new PlatformProfile(PlatformProfileId.New(), new("codex"), "codex2", "Codex 2",
+            Path.Combine(Path.GetTempPath(), $"codex2-{Guid.NewGuid():N}"));
+        await profiles.SaveAsync(second);
+        var snapshots = new SqliteUsageSnapshotRepository(factory!);
+        var now = DateTimeOffset.UtcNow;
+        await snapshots.SaveAsync(CreateSnapshot(codexProfileId, 70, now));
+        await snapshots.SaveAsync(CreateSnapshot(second.Id, 10, now.AddSeconds(1)));
+
+        await snapshots.InvalidateAsync(codexProfileId);
+
+        Assert.IsNull(await snapshots.GetLatestAsync(codexProfileId));
+        UsageSnapshot? remaining = await snapshots.GetLatestAsync(second.Id);
+        Assert.IsNotNull(remaining);
+        Assert.AreEqual(second.Id, remaining.PlatformProfileId);
+        Assert.AreEqual(10m, remaining.Windows.Single().UsedPercent.Value);
+    }
+
+    [TestMethod]
+    public async Task AtomicReservationRejectsAStaleProfileAssignment()
+    {
+        var profiles = new SqlitePlatformProfileRepository(factory!);
+        var second = new PlatformProfile(PlatformProfileId.New(), new("codex"), "codex2", "Codex 2",
+            Path.Combine(Path.GetTempPath(), $"codex2-{Guid.NewGuid():N}"));
+        await profiles.SaveAsync(second);
+        var repository = new SqliteWorkItemRepository(factory!);
+        var item = CreateQueuedWorkItem();
+        await repository.SaveAsync(item);
+
+        SchedulerLease? lease = await repository.TryAcquireLeaseAsync(item.Id, second.Id, "stale-worker",
+            DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1));
+
+        Assert.IsNull(lease);
+        Assert.AreEqual(WorkItemStatus.InWarteschlange, (await repository.GetAsync(item.Id))!.Status);
+    }
+
+    [TestMethod]
+    public async Task RepositoryRejectsProfileChangeAfterExecutionStarted()
+    {
+        var profiles = new SqlitePlatformProfileRepository(factory!);
+        var second = new PlatformProfile(PlatformProfileId.New(), new("codex"), "codex2", "Codex 2",
+            Path.Combine(Path.GetTempPath(), $"codex2-{Guid.NewGuid():N}"));
+        await profiles.SaveAsync(second);
+        var repository = new SqliteWorkItemRepository(factory!);
+        var item = CreateQueuedWorkItem();
+        await repository.SaveAsync(item);
+        Assert.IsNotNull(await repository.TryAcquireLeaseAsync(item.Id, item.PlatformProfileId, "worker",
+            DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1)));
+        item = (await repository.GetAsync(item.Id))!;
+        item.TransitionTo(WorkItemStatus.InBearbeitung);
+        item.MarkAttemptStarted(DateTimeOffset.UtcNow);
+        await repository.SaveAsync(item);
+        var changed = WorkItem.Rehydrate(item.Id, item.Title, item.Priority, item.PlatformId, second.Id,
+            item.ModelId, item.Effort, item.PromptPath, item.AutoCommit, item.CreatedAtUtc, item.ProjectId,
+            item.Status, item.FirstAttemptStartedAtUtc, hasExecutionStarted: true, item.NormalRetryCount,
+            item.CommitMessage);
+
+        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => repository.SaveAsync(changed));
+    }
+
+    [TestMethod]
     public async Task MigrationAssignsExistingRowsToDefaultProfilesWithoutDataLoss()
     {
         await using var db = await factory!.CreateDbContextAsync();
@@ -196,6 +261,10 @@ public sealed class SqlitePersistenceTests
         await migrator.MigrateAsync("20260912100000_AddPlatformUiOptions");
         var workItemId = Guid.NewGuid();
         var attemptId = Guid.NewGuid();
+        var eventId = Guid.NewGuid();
+        var snapshotId = Guid.NewGuid();
+        var usageWindowId = Guid.NewGuid();
+        var blockId = Guid.NewGuid();
         var now = new DateTimeOffset(2026, 9, 12, 10, 0, 0, TimeSpan.Zero);
         await db.Database.ExecuteSqlInterpolatedAsync($$"""
             INSERT INTO "WorkItems"
@@ -210,6 +279,26 @@ public sealed class SqlitePersistenceTests
                  "StartedAtUtc", "CompletedAtUtc", "Result", "ExitCode", "SessionId", "Diagnostic")
             VALUES ({{attemptId}}, {{workItemId}}, 1, 'codex', 'gpt', 'medium', {{now}}, {{now.AddMinutes(1)}},
                     {{(int)ExecutionAttemptResult.TechnischErfolgreich}}, 0, 'session-before-ap13', NULL);
+
+            INSERT INTO "ExecutionEvents"
+                ("Id", "WorkItemId", "AttemptId", "OccurredAtUtc", "Severity", "EventType", "Message", "DataJson")
+            VALUES ({{eventId}}, {{workItemId}}, {{attemptId}}, {{now.AddMinutes(1)}},
+                    {{(int)ExecutionEventSeverity.Information}}, 'legacy.event', 'legacy', '{}');
+
+            INSERT INTO "UsageSnapshots" ("Id", "PlatformId", "ReadAtUtc", "Source", "Quality")
+            VALUES ({{snapshotId}}, 'codex', {{now}}, 'legacy', {{(int)UsageQuality.Aktuell}});
+
+            INSERT INTO "UsageWindows"
+                ("Id", "SnapshotId", "Name", "UsedPercent", "ResetAtUtc", "Source", "ReadAtUtc",
+                 "Quality", "RateLimitReachedType", "WindowDurationTicks", "LimitId", "LimitName")
+            VALUES ({{usageWindowId}}, {{snapshotId}}, 'primary', 42, {{now.AddHours(1)}}, 'legacy', {{now}},
+                    {{(int)UsageQuality.Aktuell}}, NULL, NULL, NULL, NULL);
+
+            INSERT INTO "PlatformUsageBlocks"
+                ("Id", "PlatformId", "TriggeringWorkItemId", "TriggeringAttemptId", "Reason",
+                 "CreatedAtUtc", "ReleaseRule", "ReleasedAtUtc", "ReleaseReason")
+            VALUES ({{blockId}}, 'codex', {{workItemId}}, {{attemptId}}, 'legacy block', {{now}},
+                    {{(int)PlatformBlockReleaseRule.FrischerZulaessigerUsageSnapshot}}, NULL, NULL);
             """);
 
         await migrator.MigrateAsync();
@@ -227,6 +316,14 @@ public sealed class SqlitePersistenceTests
             .ListAttemptsAsync(new(workItemId))).Single().PlatformProfileId);
         Assert.AreEqual("session-before-ap13", (await new SqliteExecutionHistoryRepository(factory)
             .ListAttemptsAsync(new(workItemId))).Single().SessionId);
+        Assert.AreEqual(codexProfile.Id, (await new SqliteExecutionHistoryRepository(factory)
+            .ListEventsAsync(new(workItemId))).Single(x => x.Id == eventId).PlatformProfileId);
+        var migratedSnapshot = (await new SqliteUsageSnapshotRepository(factory)
+            .GetLatestAsync(codexProfile.Id))!;
+        Assert.AreEqual(codexProfile.Id, migratedSnapshot.PlatformProfileId);
+        Assert.AreEqual(42m, migratedSnapshot.Windows.Single().UsedPercent.Value);
+        Assert.AreEqual(codexProfile.Id, (await new SqliteExecutionBlockRepository(factory)
+            .ListActivePlatformBlocksAsync()).Single(x => x.Id == blockId).PlatformProfileId);
         Assert.AreEqual("kept", await new SqliteSettingsRepository(factory).GetAsync("migration.marker"));
 
         await db.Database.OpenConnectionAsync();
@@ -245,8 +342,8 @@ public sealed class SqlitePersistenceTests
         var now = DateTimeOffset.UtcNow;
 
         var results = await Task.WhenAll(
-            repository.TryAcquireLeaseAsync(item.Id, "worker-a", now, TimeSpan.FromMinutes(1)),
-            repository.TryAcquireLeaseAsync(item.Id, "worker-b", now, TimeSpan.FromMinutes(1)));
+            repository.TryAcquireLeaseAsync(item.Id, item.PlatformProfileId, "worker-a", now, TimeSpan.FromMinutes(1)),
+            repository.TryAcquireLeaseAsync(item.Id, item.PlatformProfileId, "worker-b", now, TimeSpan.FromMinutes(1)));
 
         Assert.AreEqual(1, results.Count(x => x is not null));
         Assert.AreEqual(1, results.Count(x => x is null));
@@ -270,9 +367,12 @@ public sealed class SqlitePersistenceTests
         await repository.SaveAsync(sameProject);
         var now = DateTimeOffset.UtcNow;
 
-        Assert.IsNotNull(await repository.TryAcquireLeaseAsync(first.Id, "worker-a", now, TimeSpan.FromMinutes(1)));
-        Assert.IsNull(await repository.TryAcquireLeaseAsync(samePlatform.Id, "worker-b", now, TimeSpan.FromMinutes(1)));
-        Assert.IsNull(await repository.TryAcquireLeaseAsync(sameProject.Id, "worker-c", now, TimeSpan.FromMinutes(1)));
+        Assert.IsNotNull(await repository.TryAcquireLeaseAsync(first.Id, first.PlatformProfileId,
+            "worker-a", now, TimeSpan.FromMinutes(1)));
+        Assert.IsNull(await repository.TryAcquireLeaseAsync(samePlatform.Id, samePlatform.PlatformProfileId,
+            "worker-b", now, TimeSpan.FromMinutes(1)));
+        Assert.IsNull(await repository.TryAcquireLeaseAsync(sameProject.Id, sameProject.PlatformProfileId,
+            "worker-c", now, TimeSpan.FromMinutes(1)));
     }
 
     [TestMethod]
@@ -284,7 +384,8 @@ public sealed class SqlitePersistenceTests
         await projects.SaveAsync(project);
         var item = CreateQueuedWorkItem(project.Id);
         await workItems.SaveAsync(item);
-        var lease = await workItems.TryAcquireLeaseAsync(item.Id, "worker", DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1));
+        var lease = await workItems.TryAcquireLeaseAsync(item.Id, item.PlatformProfileId, "worker",
+            DateTimeOffset.UtcNow, TimeSpan.FromMinutes(1));
         Assert.IsNotNull(lease);
         item = (await workItems.GetAsync(item.Id))!;
         item.TransitionTo(WorkItemStatus.InBearbeitung);
@@ -294,9 +395,11 @@ public sealed class SqlitePersistenceTests
         var attempt = new ExecutionAttempt(ExecutionAttemptId.New(), item.Id, 1, item.PlatformId,
             item.PlatformProfileId, item.ModelId,
             item.Effort, now.AddSeconds(-1), now, ExecutionAttemptResult.UsageExceeded, 1, "session-2");
-        var executionEvent = new ExecutionEvent(Guid.NewGuid(), item.Id, now, ExecutionEventSeverity.Error,
+        var executionEvent = new ExecutionEvent(Guid.NewGuid(), item.Id, item.PlatformProfileId, now,
+            ExecutionEventSeverity.Error,
             "usage_exceeded", "Usage-Limit erreicht", attempt.Id);
-        var platformBlock = new PlatformUsageBlock(Guid.NewGuid(), item.PlatformId, item.Id, attempt.Id,
+        var platformBlock = new PlatformUsageBlock(Guid.NewGuid(), item.PlatformId, item.PlatformProfileId,
+            item.Id, attempt.Id,
             "Usage-Limit erreicht", now);
         var projectHold = new ProjectExecutionHold(Guid.NewGuid(), project.Id, item.Id, item.PlatformId,
             "Möglicherweise teilweise ausgeführt", now);
@@ -322,13 +425,17 @@ public sealed class SqlitePersistenceTests
         var item = CreateQueuedWorkItem(project.Id);
         await workItems.SaveAsync(item);
         var detectedAt = DateTimeOffset.UtcNow;
-        var lease = await workItems.TryAcquireLeaseAsync(item.Id, "crashed-worker",
+        var lease = await workItems.TryAcquireLeaseAsync(item.Id, item.PlatformProfileId, "crashed-worker",
             detectedAt.AddMinutes(-2), TimeSpan.FromHours(1));
         Assert.IsNotNull(lease);
         item = (await workItems.GetAsync(item.Id))!;
         item.TransitionTo(WorkItemStatus.InBearbeitung);
         item.MarkAttemptStarted(detectedAt.AddMinutes(-1));
         await workItems.SaveAsync(item);
+        await history.AddAttemptAsync(new ExecutionAttempt(ExecutionAttemptId.New(), item.Id, 1,
+            item.PlatformId, item.PlatformProfileId, item.ModelId, item.Effort,
+            detectedAt.AddMinutes(-3), detectedAt.AddMinutes(-2), ExecutionAttemptResult.UsageExceeded,
+            7, "session-before-crash"));
 
         var result = await new SqliteStartupRecoveryRepository(factory!)
             .RecoverInterruptedAsync(detectedAt, "restart-worker");
@@ -337,11 +444,15 @@ public sealed class SqlitePersistenceTests
         Assert.AreEqual(1, result.CreatedProjectHoldCount);
         Assert.AreEqual(1, result.RemovedLeaseCount);
         Assert.AreEqual(WorkItemStatus.Unterbrochen, (await workItems.GetAsync(item.Id))!.Status);
-        var attempt = (await history.ListAttemptsAsync(item.Id)).Single();
+        var attempt = (await history.ListAttemptsAsync(item.Id)).Last();
         Assert.AreEqual(ExecutionAttemptResult.Unterbrochen, attempt.Result);
+        Assert.AreEqual(item.PlatformProfileId, attempt.PlatformProfileId);
+        Assert.AreEqual("session-before-crash", attempt.SessionId);
         var recoveryEvent = (await history.ListEventsAsync(item.Id)).Single(x => x.EventType == "recovery.interrupted");
         Assert.AreEqual("InBearbeitung", recoveryEvent.Data["previousStatus"]);
         Assert.AreEqual("codex", recoveryEvent.Data["platformId"]);
+        Assert.AreEqual(item.PlatformProfileId.ToString(), recoveryEvent.Data["platformProfileId"]);
+        Assert.AreEqual("session-before-crash", recoveryEvent.Data["lastSessionId"]);
         Assert.IsTrue(recoveryEvent.Data.ContainsKey("logReference"));
         Assert.AreEqual(1, (await new SqliteExecutionBlockRepository(factory!)
             .ListActiveProjectHoldsAsync()).Count);
@@ -396,6 +507,12 @@ public sealed class SqlitePersistenceTests
         item.TransitionTo(WorkItemStatus.InWarteschlange);
         return item;
     }
+
+    private static UsageSnapshot CreateSnapshot(PlatformProfileId profileId, decimal used,
+        DateTimeOffset readAtUtc) => new(new PlatformId("codex"), profileId, readAtUtc, "test",
+        UsageQuality.Aktuell,
+        [new UsageWindow("primary", new UsagePercent(used), readAtUtc.AddHours(1), "test", readAtUtc,
+            UsageQuality.Aktuell)]);
 
     private sealed class TestContextFactory(DbContextOptions<KischedulerDbContext> options)
         : IDbContextFactory<KischedulerDbContext>
