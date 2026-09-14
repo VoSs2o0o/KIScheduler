@@ -9,13 +9,15 @@ public sealed class ClaudePlatform : IAiPlatform
     public static readonly PlatformId Id = new("claude");
     private readonly IProcessRunner processRunner;
     private readonly ClaudeOptions options;
+    private readonly IClaudeProfileResolver? profileResolver;
     private readonly IPlatformRepository? platformRepository;
 
     public ClaudePlatform(IProcessRunner processRunner, IOptions<ClaudeOptions> options,
-        IPlatformRepository? platformRepository = null)
+        IClaudeProfileResolver? profileResolver = null, IPlatformRepository? platformRepository = null)
     {
         this.processRunner = processRunner ?? throw new ArgumentNullException(nameof(processRunner));
         this.options = options?.Value ?? throw new ArgumentNullException(nameof(options));
+        this.profileResolver = profileResolver;
         this.platformRepository = platformRepository;
         this.options.Validate();
     }
@@ -25,10 +27,50 @@ public sealed class ClaudePlatform : IAiPlatform
 
     public async Task<PlatformHealth> CheckAvailabilityAsync(CancellationToken cancellationToken = default)
     {
+        if (profileResolver is null)
+            return await CheckAvailabilityLegacyAsync(cancellationToken).ConfigureAwait(false);
+
+        PlatformProfile profile;
+        try
+        {
+            profile = await profileResolver.ResolveDefaultAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (ClaudeProfileException exception)
+        {
+            return new PlatformHealth(PlatformHealthStatus.Misconfigured, exception.Message);
+        }
+        return await CheckAvailabilityAsync(profile, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<PlatformHealth> CheckAvailabilityAsync(PlatformProfileId profileId,
+        CancellationToken cancellationToken = default)
+    {
+        if (profileResolver is null)
+            return await CheckAvailabilityLegacyAsync(cancellationToken).ConfigureAwait(false);
+
+        PlatformProfile profile;
+        try
+        {
+            profile = await profileResolver.ResolveAsync(profileId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (ClaudeProfileException exception)
+        {
+            return new PlatformHealth(PlatformHealthStatus.Misconfigured, exception.Message);
+        }
+        return await CheckAvailabilityAsync(profile, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<PlatformHealth> CheckAvailabilityAsync(PlatformProfile profile,
+        CancellationToken cancellationToken)
+    {
+        var executable = await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false);
+        IReadOnlyDictionary<string, string> environment =
+            ClaudeProcessEnvironment.ForProfile(profile.ConfigurationDirectory);
         ProcessRunResult result = await processRunner.RunAsync(new ProcessRunRequest(
-            await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false))
+            executable)
         {
             Arguments = ["--version"],
+            EnvironmentVariables = environment,
             Timeout = options.AvailabilityTimeout
         }, cancellationToken).ConfigureAwait(false);
 
@@ -42,6 +84,24 @@ public sealed class ClaudePlatform : IAiPlatform
             return new PlatformHealth(PlatformHealthStatus.Unavailable,
                 FirstNonEmpty(result.StandardError, result.StandardOutput) ?? "Claude CLI meldete einen Fehler.");
 
+        ProcessRunResult login = await processRunner.RunAsync(new ProcessRunRequest(executable)
+        {
+            Arguments = ["auth", "status"],
+            EnvironmentVariables = environment,
+            Timeout = options.AvailabilityTimeout,
+            SuppressOutputLogging = true
+        }, cancellationToken).ConfigureAwait(false);
+        if (login.TerminationReason == ProcessTerminationReason.StartFailed)
+            return new PlatformHealth(PlatformHealthStatus.ExecutableMissing,
+                $"Claude CLI konnte für das Profil '{profile.DisplayName}' nicht gestartet werden: {login.StartError}");
+        if (login.TerminationReason is ProcessTerminationReason.Cancelled or ProcessTerminationReason.TimedOut)
+            return new PlatformHealth(PlatformHealthStatus.Unavailable,
+                $"Die Anmeldeprüfung des Claude-Profils '{profile.DisplayName}' wurde abgebrochen oder hat das Zeitlimit überschritten.");
+        if (login.ExitCode != 0)
+            return new PlatformHealth(PlatformHealthStatus.Misconfigured,
+                $"Das Claude-Profil '{profile.DisplayName}' enthält keine gültige CLI-Anmeldung. " +
+                "Bitte das Profil mit 'claude auth login' anmelden.");
+
         return new PlatformHealth(PlatformHealthStatus.Available,
             FirstNonEmpty(result.StandardOutput, result.StandardError) ?? "Claude CLI verfügbar.");
     }
@@ -53,10 +113,29 @@ public sealed class ClaudePlatform : IAiPlatform
         if (!string.Equals(request.PlatformId.Value, Id.Value, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Die Ausführungsanfrage gehört nicht zur Claude-Plattform.", nameof(request));
 
+        PlatformProfile? profile = null;
+        if (profileResolver is not null)
+        {
+            try
+            {
+                profile = await profileResolver.ResolveAsync(request.PlatformProfileId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (ClaudeProfileException exception)
+            {
+                return new PlatformExecutionResult(PlatformExecutionOutcome.HumanReviewRequired,
+                    message: exception.Message, failureKind: PlatformFailureKind.Authentication);
+            }
+        }
+
+        var executable = await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false);
         ProcessRunResult process = await processRunner.RunAsync(new ProcessRunRequest(
-            await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false))
+            executable)
         {
             Arguments = BuildArguments(request),
+            EnvironmentVariables = profile is null
+                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                : ClaudeProcessEnvironment.ForProfile(profile.ConfigurationDirectory),
             WorkingDirectory = request.WorkingDirectory,
             StandardInput = request.Prompt,
             Timeout = request.Timeout,
@@ -124,6 +203,29 @@ public sealed class ClaudePlatform : IAiPlatform
             ? options.Executable
             : (await platformRepository.GetAsync(Id, cancellationToken).ConfigureAwait(false))?.Executable
                 ?? options.Executable;
+
+    private async Task<PlatformHealth> CheckAvailabilityLegacyAsync(CancellationToken cancellationToken)
+    {
+        ProcessRunResult result = await processRunner.RunAsync(new ProcessRunRequest(
+            await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false))
+        {
+            Arguments = ["--version"],
+            Timeout = options.AvailabilityTimeout
+        }, cancellationToken).ConfigureAwait(false);
+
+        if (result.TerminationReason == ProcessTerminationReason.StartFailed)
+            return new PlatformHealth(PlatformHealthStatus.ExecutableMissing,
+                $"Claude CLI konnte nicht gestartet werden: {result.StartError}");
+        if (result.TerminationReason is ProcessTerminationReason.Cancelled or ProcessTerminationReason.TimedOut)
+            return new PlatformHealth(PlatformHealthStatus.Unavailable,
+                "Die Versionsabfrage der Claude CLI wurde abgebrochen oder hat das Zeitlimit überschritten.");
+        if (result.ExitCode != 0)
+            return new PlatformHealth(PlatformHealthStatus.Unavailable,
+                FirstNonEmpty(result.StandardError, result.StandardOutput) ?? "Claude CLI meldete einen Fehler.");
+
+        return new PlatformHealth(PlatformHealthStatus.Available,
+            FirstNonEmpty(result.StandardOutput, result.StandardError) ?? "Claude CLI verfügbar.");
+    }
 
     private static string? FirstNonEmpty(params IReadOnlyList<string>[] groups) => groups
         .SelectMany(group => group)

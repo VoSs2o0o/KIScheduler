@@ -66,7 +66,18 @@ public static class PlatformServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configuration);
-        services.Configure<ClaudeOptions>(configuration.GetSection(ClaudeOptions.SectionName));
+        var section = configuration.GetSection(ClaudeOptions.SectionName);
+        services.AddOptions<ClaudeOptions>().Configure(options =>
+        {
+            section.Bind(options);
+
+            var configuredUsageArguments = section
+                .GetSection($"{nameof(ClaudeOptions.Usage)}:{nameof(ClaudeUsageOptions.Arguments)}")
+                .Get<string[]>();
+            if (configuredUsageArguments is { Length: > 0 })
+                options.Usage.Arguments = [.. configuredUsageArguments];
+        });
+        services.AddSingleton<IClaudeProfileResolver, ClaudeProfileResolver>();
         services.AddSingleton<CommandRegexReader>();
         services.AddAiPlatform<ClaudePlatform>();
         services.AddUsageProvider<ClaudeUsageProvider>();

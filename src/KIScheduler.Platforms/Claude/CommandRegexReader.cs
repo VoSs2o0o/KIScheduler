@@ -20,6 +20,8 @@ public sealed class CommandRegexReader(IProcessRunner processRunner)
             Arguments = request.Arguments,
             WorkingDirectory = request.WorkingDirectory,
             StandardInput = request.StandardInput,
+            EnvironmentVariables = request.EnvironmentVariables,
+            SensitiveEnvironmentVariableNames = request.SensitiveEnvironmentVariableNames,
             Timeout = request.CommandTimeout,
             SuppressOutputLogging = request.SuppressOutputLogging
         }, cancellationToken).ConfigureAwait(false);
@@ -108,6 +110,9 @@ public sealed record CommandRegexReadRequest
     public IReadOnlyList<string> Arguments { get; init; } = [];
     public string? WorkingDirectory { get; init; }
     public string? StandardInput { get; init; }
+    public IReadOnlyDictionary<string, string> EnvironmentVariables { get; init; }
+        = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    public IReadOnlyCollection<string> SensitiveEnvironmentVariableNames { get; init; } = [];
     public required string Pattern { get; init; }
     public string UsedGroupName { get; init; } = "used";
     public string? ResetGroupName { get; init; } = "reset";

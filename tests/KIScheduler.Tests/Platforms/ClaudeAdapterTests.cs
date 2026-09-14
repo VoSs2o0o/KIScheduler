@@ -1,6 +1,9 @@
 using KIScheduler.Core.Contracts;
 using KIScheduler.Core.Domain;
+using KIScheduler.Platforms;
 using KIScheduler.Platforms.Claude;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -11,6 +14,25 @@ public sealed class ClaudeAdapterTests
 {
     private static readonly PlatformProfileId ProfileId = new(new Guid("22222222-2222-2222-2222-222222222222"));
     private static readonly DateTimeOffset Now = new(2026, 9, 11, 12, 0, 0, TimeSpan.Zero);
+
+    [TestMethod]
+    public void ConfigurationReplacesDefaultUsageArgumentsInsteadOfAppendingThem()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Claude:Usage:Arguments:0"] = "-p",
+                ["Claude:Usage:Arguments:1"] = "custom usage"
+            })
+            .Build();
+        var services = new ServiceCollection();
+
+        services.AddClaudePlatform(configuration);
+        using ServiceProvider provider = services.BuildServiceProvider();
+        ClaudeOptions options = provider.GetRequiredService<IOptions<ClaudeOptions>>().Value;
+
+        CollectionAssert.AreEqual(new[] { "-p", "custom usage" }, options.Usage.Arguments.ToArray());
+    }
 
     [TestMethod]
     public async Task PlatformUsesNonInteractiveStructuredOutputStdinModelEffortAndResume()
@@ -37,6 +59,28 @@ public sealed class ClaudeAdapterTests
         AssertArgumentValue(runner.LastRequest.Arguments, "--model", "claude-sonnet-5");
         AssertArgumentValue(runner.LastRequest.Arguments, "--effort", "high");
         AssertArgumentValue(runner.LastRequest.Arguments, "--resume", "session-7");
+    }
+
+    [TestMethod]
+    public async Task ProfileExecutionAndResumeAlwaysUseSelectedClaudeConfigDirectory()
+    {
+        string profileDirectory = Path.Combine(Path.GetTempPath(), "claude-profile-two");
+        var runner = new RecordingRunner(Completed(0,
+            "{\"type\":\"result\",\"is_error\":false,\"result\":\"ok\",\"session_id\":\"s2\"}"));
+        var platform = new ClaudePlatform(runner, Options.Create(new ClaudeOptions()),
+            new FixedProfileResolver(new PlatformProfile(ProfileId, ClaudePlatform.Id, "claude2",
+                "Claude 2", profileDirectory)));
+
+        PlatformExecutionResult result = await platform.ExecuteAsync(
+            new PlatformExecutionRequest(ClaudePlatform.Id, ProfileId, new ModelId("sonnet"),
+                new EffortLevel("high"), "weiter", Environment.CurrentDirectory)
+            { SessionId = "s1" });
+
+        Assert.AreEqual(PlatformExecutionOutcome.Succeeded, result.Outcome);
+        Assert.AreEqual(profileDirectory, runner.LastRequest!.EnvironmentVariables["CLAUDE_CONFIG_DIR"]);
+        int resumeIndex = runner.LastRequest.Arguments.ToList().IndexOf("--resume");
+        Assert.IsTrue(resumeIndex >= 0);
+        Assert.AreEqual("s1", runner.LastRequest.Arguments[resumeIndex + 1]);
     }
 
     [TestMethod]
@@ -77,6 +121,26 @@ public sealed class ClaudeAdapterTests
 
         Assert.AreEqual(PlatformHealthStatus.ExecutableMissing, health.Status);
         CollectionAssert.AreEqual(new[] { "--version" }, runner.LastRequest!.Arguments.ToArray());
+    }
+
+    [TestMethod]
+    public async Task ProfileHealthChecksVersionAndAuthStatusWithSameEnvironment()
+    {
+        string profileDirectory = Path.Combine(Path.GetTempPath(), "claude-profile-health");
+        var profile = new PlatformProfile(ProfileId, ClaudePlatform.Id, "claude2", "Claude 2", profileDirectory);
+        var runner = new QueueRunner(Completed(0, "claude 2.1"), Completed(0, "{\"loggedIn\":true}"));
+        var platform = new ClaudePlatform(runner, Options.Create(new ClaudeOptions()),
+            new FixedProfileResolver(profile));
+
+        PlatformHealth health = await platform.CheckAvailabilityAsync(ProfileId);
+
+        Assert.AreEqual(PlatformHealthStatus.Available, health.Status);
+        Assert.AreEqual(2, runner.Requests.Count);
+        CollectionAssert.AreEqual(new[] { "--version" }, runner.Requests[0].Arguments.ToArray());
+        CollectionAssert.AreEqual(new[] { "auth", "status" }, runner.Requests[1].Arguments.ToArray());
+        Assert.IsTrue(runner.Requests.All(request =>
+            request.EnvironmentVariables["CLAUDE_CONFIG_DIR"] == profileDirectory));
+        Assert.IsTrue(runner.Requests[1].SuppressOutputLogging);
     }
 
     [TestMethod]
@@ -189,6 +253,36 @@ public sealed class ClaudeAdapterTests
         CollectionAssert.AreEqual(new[] { "usage-probe", "claude-execution" }, runner.Executables.ToArray());
     }
 
+    [TestMethod]
+    public async Task ProfileUsageUsesSelectedDirectoryAndTagsResultWithProfileId()
+    {
+        string profileDirectory = Path.Combine(Path.GetTempPath(), "claude-profile-usage");
+        var runner = new RecordingRunner(Completed(0, "Current session: 62% used"));
+        var profile = new PlatformProfile(ProfileId, ClaudePlatform.Id, "claude2", "Claude 2", profileDirectory);
+        var provider = new ClaudeUsageProvider(new CommandRegexReader(runner),
+            new FixedProfileResolver(profile), new TestClock(), Options.Create(new ClaudeOptions()));
+
+        UsageReadResult result = await provider.ReadAsync(ProfileId, true);
+
+        Assert.AreEqual(UsageReadStatus.Available, result.Status);
+        Assert.AreEqual(ProfileId, result.PlatformProfileId);
+        Assert.AreEqual(profileDirectory, runner.LastRequest!.EnvironmentVariables["CLAUDE_CONFIG_DIR"]);
+    }
+
+    [TestMethod]
+    public async Task ProfileResolverDiagnosesMissingFolderWithoutReadingCredentialFiles()
+    {
+        string missing = Path.Combine(Path.GetTempPath(), $"missing-claude-profile-{Guid.NewGuid():N}");
+        var profile = new PlatformProfile(ProfileId, ClaudePlatform.Id, "claude2", "Claude 2", missing);
+        var resolver = new ClaudeProfileResolver(new ProfileRepository(profile));
+
+        ClaudeProfileException exception = await Assert.ThrowsExceptionAsync<ClaudeProfileException>(
+            () => resolver.ResolveAsync(ProfileId));
+
+        Assert.AreEqual(ClaudeProfileFailureKind.DirectoryMissing, exception.Kind);
+        StringAssert.Contains(exception.Message, "fehlt");
+    }
+
     private static ClaudeUsageProvider Provider(ClaudeUsageOptions? usage = null)
     {
         var runner = new RecordingRunner(Completed(0));
@@ -237,12 +331,44 @@ public sealed class ClaudeAdapterTests
     {
         private readonly Queue<ProcessRunResult> results = new(results);
         public List<string> Executables { get; } = [];
+        public List<ProcessRunRequest> Requests { get; } = [];
         public Task<ProcessRunResult> RunAsync(ProcessRunRequest request,
             CancellationToken cancellationToken = default)
         {
             Executables.Add(request.FileName);
+            Requests.Add(request);
             return Task.FromResult(results.Dequeue());
         }
+    }
+
+    private sealed class FixedProfileResolver(params PlatformProfile[] profiles) : IClaudeProfileResolver
+    {
+        private readonly Dictionary<PlatformProfileId, PlatformProfile> profiles = profiles.ToDictionary(x => x.Id);
+
+        public Task<PlatformProfile> ResolveAsync(PlatformProfileId profileId,
+            CancellationToken cancellationToken = default) => Task.FromResult(profiles[profileId]);
+
+        public Task<PlatformProfile> ResolveDefaultAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(profiles.Values.First());
+    }
+
+    private sealed class ProfileRepository(PlatformProfile profile) : IPlatformProfileRepository
+    {
+        public Task<PlatformProfile?> GetAsync(PlatformProfileId id, CancellationToken cancellationToken = default) =>
+            Task.FromResult<PlatformProfile?>(id == profile.Id ? profile : null);
+
+        public Task<PlatformProfile?> GetDefaultAsync(PlatformId platformId,
+            CancellationToken cancellationToken = default) => Task.FromResult<PlatformProfile?>(profile);
+
+        public Task<IReadOnlyList<PlatformProfile>> ListAsync(PlatformId? platformId = null,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<PlatformProfile>>([profile]);
+
+        public Task SaveAsync(PlatformProfile value, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task<bool> DisableAsync(PlatformProfileId id, CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
     }
 
     private sealed class TestClock : IClock
