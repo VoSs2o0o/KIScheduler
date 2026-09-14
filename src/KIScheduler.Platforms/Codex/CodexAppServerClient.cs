@@ -15,6 +15,7 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
     private readonly CodexOptions options;
     private readonly ILogger<CodexAppServerClient> logger;
     private readonly IPlatformRepository? platformRepository;
+    private readonly PlatformProfile profile;
     private readonly SemaphoreSlim connectionGate = new(1, 1);
     private readonly SemaphoreSlim writeGate = new(1, 1);
     private readonly ConcurrentDictionary<long, TaskCompletionSource<JsonElement>> pending = new();
@@ -27,15 +28,19 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
     private bool initialized;
     private bool disposed;
 
-    public CodexAppServerClient(IOptions<CodexOptions> options, ILogger<CodexAppServerClient> logger,
-        IPlatformRepository? platformRepository = null)
+    public CodexAppServerClient(PlatformProfile profile, IOptions<CodexOptions> options,
+        ILogger<CodexAppServerClient> logger, IPlatformRepository? platformRepository = null)
     {
+        this.profile = profile ?? throw new ArgumentNullException(nameof(profile));
+        if (!profile.PlatformId.Value.Equals(CodexPlatform.Id.Value, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Das App-Server-Profil gehört nicht zu Codex.", nameof(profile));
         this.options = options?.Value ?? throw new ArgumentNullException(nameof(options));
         this.options.Validate();
         this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
         this.platformRepository = platformRepository;
     }
 
+    public PlatformProfileId? PlatformProfileId => profile.Id;
     public event EventHandler<CodexRateLimitsChangedEventArgs>? RateLimitsChanged;
 
     public async Task<CodexRateLimitsResponse> ReadRateLimitsAsync(CancellationToken cancellationToken = default)
@@ -108,12 +113,12 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
             StandardErrorEncoding = Encoding.UTF8
         };
         foreach (string argument in options.AppServerArguments) startInfo.ArgumentList.Add(argument);
-        foreach ((string name, string value) in CodexProcessEnvironment.ForExecutable(executable))
+        foreach ((string name, string value) in CodexProcessEnvironment.ForProfile(
+                     executable, profile.ConfigurationDirectory))
             startInfo.Environment[name] = value;
 
-        logger.LogInformation("Starting Codex App Server {Executable} with arguments {Arguments}; user profile: {UserProfile}",
-            executable, string.Join(' ', options.AppServerArguments),
-            startInfo.Environment.TryGetValue("USERPROFILE", out var profile) ? profile : "<inherited>");
+        logger.LogInformation("Starting Codex App Server {Executable} with arguments {Arguments} for profile {ProfileId}",
+            executable, string.Join(' ', options.AppServerArguments), profile.Id);
 
         process = new Process { StartInfo = startInfo };
         if (!process.Start())
@@ -266,7 +271,7 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
         try
         {
             CodexRateLimitsResponse response = CodexRateLimitsJson.Parse(parameters);
-            RateLimitsChanged?.Invoke(this, new CodexRateLimitsChangedEventArgs(response));
+            RateLimitsChanged?.Invoke(this, new CodexRateLimitsChangedEventArgs(profile.Id, response));
         }
         catch (Exception exception)
         {
@@ -281,9 +286,10 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
         {
             while (await activeProcess.StandardError.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
             {
-                standardError.Enqueue(RedactDiagnostic(line));
+                standardError.Enqueue("<diagnostic omitted>");
                 while (standardError.Count > 20) standardError.TryDequeue(out _);
-                logger.LogWarning("Codex App Server stderr: {Diagnostic}", RedactDiagnostic(line));
+                logger.LogWarning("Codex App Server reported a diagnostic for profile {ProfileId}; content omitted",
+                    profile.Id);
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -297,12 +303,6 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
         return diagnostic is null
             ? "Der Codex App Server hat die Verbindung beendet."
             : $"Der Codex App Server hat die Verbindung beendet: {diagnostic}";
-    }
-
-    private static string RedactDiagnostic(string value)
-    {
-        var marker = value.IndexOf("Bearer ", StringComparison.OrdinalIgnoreCase);
-        return marker < 0 ? value : value[..marker] + "Bearer <redacted>";
     }
 
     private static CodexAppServerFailureKind ClassifyServerError(string message) =>
@@ -360,4 +360,5 @@ public sealed class CodexAppServerClient : ICodexAppServerClient
         connectionGate.Dispose();
         writeGate.Dispose();
     }
+
 }

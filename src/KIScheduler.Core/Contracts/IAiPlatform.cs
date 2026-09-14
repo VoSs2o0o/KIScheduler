@@ -8,6 +8,8 @@ public interface IAiPlatform
     PlatformId PlatformId { get; }
     PlatformCapabilities Capabilities { get; }
     Task<PlatformHealth> CheckAvailabilityAsync(CancellationToken cancellationToken = default);
+    Task<PlatformHealth> CheckAvailabilityAsync(PlatformProfileId profileId,
+        CancellationToken cancellationToken = default) => CheckAvailabilityAsync(cancellationToken);
     Task<PlatformExecutionResult> ExecuteAsync(PlatformExecutionRequest request,
         CancellationToken cancellationToken = default);
 }
@@ -46,10 +48,13 @@ public sealed class PlatformHealth
 
 public sealed record PlatformExecutionRequest
 {
-    public PlatformExecutionRequest(PlatformId platformId, ModelId modelId, EffortLevel effort,
+    public PlatformExecutionRequest(PlatformId platformId, PlatformProfileId platformProfileId,
+        ModelId modelId, EffortLevel effort,
         string prompt, string workingDirectory)
     {
         PlatformId = platformId ?? throw new ArgumentNullException(nameof(platformId));
+        DomainValidation.Id(platformProfileId.Value, nameof(platformProfileId));
+        PlatformProfileId = platformProfileId;
         ModelId = modelId ?? throw new ArgumentNullException(nameof(modelId));
         Effort = effort ?? throw new ArgumentNullException(nameof(effort));
         Prompt = DomainValidation.Required(prompt, nameof(prompt));
@@ -57,6 +62,7 @@ public sealed record PlatformExecutionRequest
     }
 
     public PlatformId PlatformId { get; }
+    public PlatformProfileId PlatformProfileId { get; }
     public ModelId ModelId { get; }
     public EffortLevel Effort { get; }
     public string Prompt { get; }

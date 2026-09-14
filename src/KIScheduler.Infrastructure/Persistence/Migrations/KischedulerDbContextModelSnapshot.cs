@@ -44,6 +44,9 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid>("PlatformProfileId")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("Result")
                         .HasColumnType("INTEGER");
 
@@ -60,6 +63,8 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                         .HasColumnType("TEXT");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("PlatformProfileId", "PlatformId");
 
                     b.HasIndex("WorkItemId", "SequenceNumber")
                         .IsUnique();
@@ -138,6 +143,67 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                     b.ToTable("Platforms", null, t =>
                         {
                             t.HasCheckConstraint("CK_Platforms_Capacity", "Capacity > 0");
+                        });
+                });
+
+            modelBuilder.Entity("KIScheduler.Infrastructure.Persistence.PlatformProfileRow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ConfigurationDirectory")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("TEXT")
+                        .UseCollation("NOCASE");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("TEXT")
+                        .UseCollation("NOCASE");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT")
+                        .UseCollation("NOCASE");
+
+                    b.Property<string>("PlatformId")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("ShowUsageInStatusBar")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("Id", "PlatformId");
+
+                    b.HasIndex("PlatformId")
+                        .IsUnique()
+                        .HasFilter("\"IsDefault\" = 1");
+
+                    b.HasIndex("PlatformId", "ConfigurationDirectory")
+                        .IsUnique();
+
+                    b.HasIndex("PlatformId", "DisplayName")
+                        .IsUnique();
+
+                    b.HasIndex("PlatformId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("PlatformProfiles", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_PlatformProfiles_DefaultName", "(IsDefault = 1 AND lower(Name) = 'default') OR (IsDefault = 0 AND lower(Name) <> 'default')");
                         });
                 });
 
@@ -486,6 +552,9 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid>("PlatformProfileId")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("Priority")
                         .HasColumnType("INTEGER");
 
@@ -509,6 +578,8 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("ProjectId");
 
+                    b.HasIndex("PlatformProfileId", "PlatformId");
+
                     b.HasIndex("Status", "Priority", "CreatedAtUtc");
 
                     b.ToTable("WorkItems", null, t =>
@@ -521,10 +592,26 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("KIScheduler.Infrastructure.Persistence.ExecutionAttemptRow", b =>
                 {
+                    b.HasOne("KIScheduler.Infrastructure.Persistence.PlatformProfileRow", null)
+                        .WithMany()
+                        .HasForeignKey("PlatformProfileId", "PlatformId")
+                        .HasPrincipalKey("Id", "PlatformId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("KIScheduler.Infrastructure.Persistence.WorkItemRow", null)
                         .WithMany()
                         .HasForeignKey("WorkItemId")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("KIScheduler.Infrastructure.Persistence.PlatformProfileRow", b =>
+                {
+                    b.HasOne("KIScheduler.Infrastructure.Persistence.PlatformRow", null)
+                        .WithMany()
+                        .HasForeignKey("PlatformId")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 
@@ -586,6 +673,13 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("KIScheduler.Infrastructure.Persistence.WorkItemRow", b =>
                 {
+                    b.HasOne("KIScheduler.Infrastructure.Persistence.PlatformProfileRow", null)
+                        .WithMany()
+                        .HasForeignKey("PlatformProfileId", "PlatformId")
+                        .HasPrincipalKey("Id", "PlatformId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("KIScheduler.Infrastructure.Persistence.ProjectRow", null)
                         .WithMany()
                         .HasForeignKey("ProjectId")

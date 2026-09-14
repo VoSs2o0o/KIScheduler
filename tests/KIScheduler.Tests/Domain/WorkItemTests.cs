@@ -6,6 +6,7 @@ namespace KIScheduler.Tests.Domain;
 [TestClass]
 public sealed class WorkItemTests
 {
+    private static readonly PlatformProfileId ProfileId = new(new Guid("11111111-1111-1111-1111-111111111111"));
     [TestMethod]
     public void TitleCanBeChangedWithDomainValidation()
     {
@@ -20,7 +21,7 @@ public sealed class WorkItemTests
     public void CommitMessageCanBeDerivedFromApFileAndOverridden()
     {
         var item = new WorkItem(WorkItemId.New(), "Git-Prüfung und Auto-Commit", new(50), new("codex"),
-            new("gpt"), new("high"), new(Path.Combine("docs", "009_AP9.md")), true,
+            ProfileId, new("gpt"), new("high"), new(Path.Combine("docs", "009_AP9.md")), true,
             DateTimeOffset.UtcNow);
 
         Assert.AreEqual("AP9: Git-Prüfung und Auto-Commit", item.ResolveCommitMessage());
@@ -44,9 +45,12 @@ public sealed class WorkItemTests
     {
         var item = CreateWorkItem();
 
-        item.ChangeExecutionConfiguration(new PlatformId("claude"), new ModelId("opus"), new EffortLevel("high"));
+        var newProfileId = PlatformProfileId.New();
+        item.ChangeExecutionConfiguration(new PlatformId("claude"), newProfileId,
+            new ModelId("opus"), new EffortLevel("high"));
 
         Assert.AreEqual("claude", item.PlatformId.Value);
+        Assert.AreEqual(newProfileId, item.PlatformProfileId);
         Assert.AreEqual("opus", item.ModelId.Value);
     }
 
@@ -60,7 +64,8 @@ public sealed class WorkItemTests
         item.MarkAttemptStarted(Now.AddMinutes(1));
 
         Assert.ThrowsException<InvalidOperationException>(() =>
-            item.ChangeExecutionConfiguration(new PlatformId("claude"), new ModelId("opus"), new EffortLevel("high")));
+            item.ChangeExecutionConfiguration(new PlatformId("claude"), PlatformProfileId.New(),
+                new ModelId("opus"), new EffortLevel("high")));
     }
 
     [TestMethod]
@@ -121,6 +126,6 @@ public sealed class WorkItemTests
 
     private static WorkItem CreateWorkItem() => new(
         WorkItemId.New(), "AP1", new WorkItemPriority(50), new PlatformId("codex"),
-        new ModelId("gpt-5.6-sol"), new EffortLevel("medium"), new PromptPath("docs/001_AP1.md"),
+        ProfileId, new ModelId("gpt-5.6-sol"), new EffortLevel("medium"), new PromptPath("docs/001_AP1.md"),
         true, Now, ProjectId.New());
 }

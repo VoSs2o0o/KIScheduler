@@ -44,6 +44,7 @@ public sealed class SqliteStartupRecoveryRepository(
                     WorkItemId = row.Id,
                     SequenceNumber = sequence,
                     PlatformId = row.PlatformId,
+                    PlatformProfileId = row.PlatformProfileId,
                     ModelId = row.ModelId,
                     Effort = row.Effort,
                     StartedAtUtc = startedAt,

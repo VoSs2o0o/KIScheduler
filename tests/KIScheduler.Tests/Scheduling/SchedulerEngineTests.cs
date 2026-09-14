@@ -420,12 +420,14 @@ public sealed class SchedulerEngineTests
         private readonly string directory;
         private readonly Dictionary<string, FakeAiPlatform> platformMap;
         private readonly Dictionary<string, FakeUsageProvider> usageMap;
+        private readonly Dictionary<string, PlatformProfileId> profileIds;
         private readonly Dictionary<ProjectId, string> projectRoots = [];
         private readonly IDbContextFactory<KischedulerDbContext> contextFactory;
 
         private SchedulerFixture(string databasePath, string directory,
             Dictionary<string, FakeAiPlatform> platformMap,
             Dictionary<string, FakeUsageProvider> usageMap,
+            Dictionary<string, PlatformProfileId> profileIds,
             IDbContextFactory<KischedulerDbContext> contextFactory,
             SchedulerEngine engine, FakeClock clock, FakeGitService git)
         {
@@ -433,6 +435,7 @@ public sealed class SchedulerEngineTests
             this.directory = directory;
             this.platformMap = platformMap;
             this.usageMap = usageMap;
+            this.profileIds = profileIds;
             this.contextFactory = contextFactory;
             Engine = engine;
             Clock = clock;
@@ -472,9 +475,15 @@ public sealed class SchedulerEngineTests
                 usageMap[id].SetCurrent(UsageReadResult.Available(CreateSnapshot(id, clock.UtcNow, 1)));
 
             var platformRepository = new SqlitePlatformRepository(factory);
+            var profileRepository = new SqlitePlatformProfileRepository(factory);
+            var profileIds = new Dictionary<string, PlatformProfileId>(StringComparer.OrdinalIgnoreCase);
             foreach (var id in platformIds)
+            {
                 await platformRepository.SaveAsync(new PlatformDefinition(new(id), id,
                     [new PlatformModel(new("gpt"), [new("medium")])]));
+                var profileId = (await profileRepository.GetDefaultAsync(new(id)))!.Id;
+                profileIds[id] = profileId;
+            }
             await new SqliteUsagePolicyRepository(factory).ReplaceAsync(platformIds.Select(id =>
                 new UsagePolicy(new(id), [DayOfWeek.Friday], new TimeOnly(0, 0), new TimeOnly(23, 59),
                     "UTC", new(75), UnknownUsageBehavior.Blockieren, TimeSpan.FromMinutes(5),
@@ -495,7 +504,8 @@ public sealed class SchedulerEngineTests
                 new PhysicalFileSystem(), git, clock,
                 schedulerOptions ?? new SchedulerOptions { AgingInterval = TimeSpan.FromMinutes(1) },
                 ownerId: "test-worker");
-            return new SchedulerFixture(databasePath, directory, platformMap, usageMap, factory, engine, clock, git);
+            return new SchedulerFixture(databasePath, directory, platformMap, usageMap, profileIds,
+                factory, engine, clock, git);
         }
 
         public FakeAiPlatform Platform(string id) => platformMap[id];
@@ -537,7 +547,8 @@ public sealed class SchedulerEngineTests
         {
             var prompt = Path.Combine(projectRoots[projectId], "docs", $"{Guid.NewGuid():N}.md");
             await File.WriteAllTextAsync(prompt, "Implementiere das Arbeitspaket.");
-            var item = new WorkItem(WorkItemId.New(), prompt, new(priority), new(platformId), new("gpt"),
+            var item = new WorkItem(WorkItemId.New(), prompt, new(priority), new(platformId),
+                profileIds[platformId], new("gpt"),
                 new("medium"), new(prompt), autoCommit, Clock.UtcNow, projectId);
             item.TransitionTo(WorkItemStatus.InWarteschlange);
             await WorkItems.SaveAsync(item);

@@ -5,7 +5,7 @@ namespace KIScheduler.Core.Domain;
 public sealed record ExecutionAttempt
 {
     public ExecutionAttempt(ExecutionAttemptId id, WorkItemId workItemId, int sequenceNumber,
-        PlatformId platformId, ModelId modelId, EffortLevel effort, DateTimeOffset startedAtUtc,
+        PlatformId platformId, PlatformProfileId platformProfileId, ModelId modelId, EffortLevel effort, DateTimeOffset startedAtUtc,
         DateTimeOffset completedAtUtc, ExecutionAttemptResult result, int? exitCode = null,
         string? sessionId = null, string? diagnostic = null)
     {
@@ -20,6 +20,8 @@ public sealed record ExecutionAttempt
         WorkItemId = workItemId;
         SequenceNumber = sequenceNumber;
         PlatformId = platformId ?? throw new ArgumentNullException(nameof(platformId));
+        DomainValidation.Id(platformProfileId.Value, nameof(platformProfileId));
+        PlatformProfileId = platformProfileId;
         ModelId = modelId ?? throw new ArgumentNullException(nameof(modelId));
         Effort = effort ?? throw new ArgumentNullException(nameof(effort));
         StartedAtUtc = DomainValidation.Utc(startedAtUtc, nameof(startedAtUtc));
@@ -39,6 +41,7 @@ public sealed record ExecutionAttempt
     public WorkItemId WorkItemId { get; }
     public int SequenceNumber { get; }
     public PlatformId PlatformId { get; }
+    public PlatformProfileId PlatformProfileId { get; }
     public ModelId ModelId { get; }
     public EffortLevel Effort { get; }
     public DateTimeOffset StartedAtUtc { get; }

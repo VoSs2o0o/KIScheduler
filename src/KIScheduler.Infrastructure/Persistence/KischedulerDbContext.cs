@@ -7,6 +7,7 @@ public sealed class KischedulerDbContext(DbContextOptions<KischedulerDbContext> 
     public DbSet<WorkItemRow> WorkItems => Set<WorkItemRow>();
     public DbSet<ProjectRow> Projects => Set<ProjectRow>();
     public DbSet<PlatformRow> Platforms => Set<PlatformRow>();
+    public DbSet<PlatformProfileRow> PlatformProfiles => Set<PlatformProfileRow>();
     public DbSet<UsagePolicyRow> UsagePolicies => Set<UsagePolicyRow>();
     public DbSet<UsageSnapshotRow> UsageSnapshots => Set<UsageSnapshotRow>();
     public DbSet<UsageWindowRow> UsageWindows => Set<UsageWindowRow>();
@@ -25,6 +26,7 @@ public sealed class KischedulerDbContext(DbContextOptions<KischedulerDbContext> 
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Title).HasMaxLength(500).IsRequired();
             entity.Property(x => x.PlatformId).HasMaxLength(100).IsRequired();
+            entity.HasIndex(x => new { x.PlatformProfileId, x.PlatformId });
             entity.Property(x => x.ModelId).HasMaxLength(100).IsRequired();
             entity.Property(x => x.Effort).HasMaxLength(50).IsRequired();
             entity.Property(x => x.PromptPath).HasMaxLength(2048).IsRequired();
@@ -36,6 +38,10 @@ public sealed class KischedulerDbContext(DbContextOptions<KischedulerDbContext> 
                 table.HasCheckConstraint("CK_WorkItems_NormalRetryCount", "NormalRetryCount >= 0");
             });
             entity.HasOne<ProjectRow>().WithMany().HasForeignKey(x => x.ProjectId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<PlatformProfileRow>().WithMany()
+                .HasForeignKey(x => new { x.PlatformProfileId, x.PlatformId })
+                .HasPrincipalKey(x => new { x.Id, x.PlatformId })
+                .OnDelete(DeleteBehavior.Restrict);
         });
         modelBuilder.Entity<ProjectRow>(entity =>
         {
@@ -54,6 +60,23 @@ public sealed class KischedulerDbContext(DbContextOptions<KischedulerDbContext> 
             entity.Property(x => x.Executable).HasMaxLength(2048).IsRequired();
             entity.Property(x => x.ModelsJson).IsRequired();
             entity.ToTable(table => table.HasCheckConstraint("CK_Platforms_Capacity", "Capacity > 0"));
+        });
+        modelBuilder.Entity<PlatformProfileRow>(entity =>
+        {
+            entity.ToTable("PlatformProfiles");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.PlatformId).HasMaxLength(100).IsRequired();
+            entity.Property(x => x.Name).HasMaxLength(100).UseCollation("NOCASE").IsRequired();
+            entity.Property(x => x.DisplayName).HasMaxLength(300).UseCollation("NOCASE").IsRequired();
+            entity.Property(x => x.ConfigurationDirectory).HasMaxLength(2048).UseCollation("NOCASE").IsRequired();
+            entity.HasAlternateKey(x => new { x.Id, x.PlatformId });
+            entity.HasIndex(x => new { x.PlatformId, x.Name }).IsUnique();
+            entity.HasIndex(x => new { x.PlatformId, x.ConfigurationDirectory }).IsUnique();
+            entity.HasIndex(x => new { x.PlatformId, x.DisplayName }).IsUnique();
+            entity.HasIndex(x => x.PlatformId).IsUnique().HasFilter("\"IsDefault\" = 1");
+            entity.HasOne<PlatformRow>().WithMany().HasForeignKey(x => x.PlatformId).OnDelete(DeleteBehavior.Restrict);
+            entity.ToTable(table => table.HasCheckConstraint("CK_PlatformProfiles_DefaultName",
+                "(IsDefault = 1 AND lower(Name) = 'default') OR (IsDefault = 0 AND lower(Name) <> 'default')"));
         });
         modelBuilder.Entity<UsagePolicyRow>(entity =>
         {
@@ -93,6 +116,10 @@ public sealed class KischedulerDbContext(DbContextOptions<KischedulerDbContext> 
             entity.ToTable("ExecutionAttempts"); entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.WorkItemId, x.SequenceNumber }).IsUnique();
             entity.HasOne<WorkItemRow>().WithMany().HasForeignKey(x => x.WorkItemId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne<PlatformProfileRow>().WithMany()
+                .HasForeignKey(x => new { x.PlatformProfileId, x.PlatformId })
+                .HasPrincipalKey(x => new { x.Id, x.PlatformId })
+                .OnDelete(DeleteBehavior.Restrict);
             entity.ToTable(table => table.HasCheckConstraint("CK_ExecutionAttempts_SequenceNumber", "SequenceNumber > 0"));
         });
         modelBuilder.Entity<ExecutionEventRow>(entity =>
@@ -139,6 +166,7 @@ public sealed class WorkItemRow
     public string Title { get; set; } = "";
     public int Priority { get; set; }
     public string PlatformId { get; set; } = "";
+    public Guid PlatformProfileId { get; set; }
     public string ModelId { get; set; } = "";
     public string Effort { get; set; } = "";
     public string PromptPath { get; set; } = "";
@@ -170,6 +198,18 @@ public sealed class PlatformRow
     public bool Enabled { get; set; } = true;
     public bool ShowUsageInStatusBar { get; set; }
     public string ModelsJson { get; set; } = "[]";
+}
+
+public sealed class PlatformProfileRow
+{
+    public Guid Id { get; set; }
+    public string PlatformId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string DisplayName { get; set; } = "";
+    public string ConfigurationDirectory { get; set; } = "";
+    public bool Enabled { get; set; } = true;
+    public bool IsDefault { get; set; }
+    public bool ShowUsageInStatusBar { get; set; }
 }
 
 public sealed class UsagePolicyRow
@@ -219,6 +259,7 @@ public sealed class ExecutionAttemptRow
     public Guid WorkItemId { get; set; }
     public int SequenceNumber { get; set; }
     public string PlatformId { get; set; } = "";
+    public Guid PlatformProfileId { get; set; }
     public string ModelId { get; set; } = "";
     public string Effort { get; set; } = "";
     public DateTimeOffset StartedAtUtc { get; set; }

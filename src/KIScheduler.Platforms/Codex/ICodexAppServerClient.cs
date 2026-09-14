@@ -1,17 +1,30 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using KIScheduler.Core.Domain;
 
 namespace KIScheduler.Platforms.Codex;
 
 public interface ICodexAppServerClient : IAsyncDisposable
 {
+    PlatformProfileId? PlatformProfileId => null;
     event EventHandler<CodexRateLimitsChangedEventArgs>? RateLimitsChanged;
     Task<CodexRateLimitsResponse> ReadRateLimitsAsync(CancellationToken cancellationToken = default);
 }
 
-public sealed class CodexRateLimitsChangedEventArgs(CodexRateLimitsResponse rateLimits) : EventArgs
+public sealed class CodexRateLimitsChangedEventArgs : EventArgs
 {
-    public CodexRateLimitsResponse RateLimits { get; } = rateLimits ?? throw new ArgumentNullException(nameof(rateLimits));
+    public CodexRateLimitsChangedEventArgs(CodexRateLimitsResponse rateLimits)
+        : this(null, rateLimits) { }
+
+    public CodexRateLimitsChangedEventArgs(PlatformProfileId? platformProfileId,
+        CodexRateLimitsResponse rateLimits)
+    {
+        PlatformProfileId = platformProfileId;
+        RateLimits = rateLimits ?? throw new ArgumentNullException(nameof(rateLimits));
+    }
+
+    public PlatformProfileId? PlatformProfileId { get; }
+    public CodexRateLimitsResponse RateLimits { get; }
 }
 
 public enum CodexAppServerFailureKind

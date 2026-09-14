@@ -2,6 +2,8 @@ using KIScheduler.Core.Domain;
 using KIScheduler.Infrastructure.Persistence;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace KIScheduler.Tests.Persistence;
@@ -11,6 +13,8 @@ public sealed class SqlitePersistenceTests
 {
     private string? databasePath;
     private IDbContextFactory<KischedulerDbContext>? factory;
+    private PlatformProfileId codexProfileId;
+    private PlatformProfileId claudeProfileId;
 
     [TestInitialize]
     public async Task InitializeAsync()
@@ -21,6 +25,14 @@ public sealed class SqlitePersistenceTests
         factory = new TestContextFactory(options);
         await using var db = await factory.CreateDbContextAsync();
         await db.Database.MigrateAsync();
+        var platforms = new SqlitePlatformRepository(factory);
+        await platforms.SaveAsync(new PlatformDefinition(new("codex"), "codex",
+            [new PlatformModel(new("gpt"), [new("medium")])]));
+        await platforms.SaveAsync(new PlatformDefinition(new("claude"), "claude",
+            [new PlatformModel(new("gpt"), [new("medium")])]));
+        var profiles = new SqlitePlatformProfileRepository(factory);
+        codexProfileId = (await profiles.GetDefaultAsync(new("codex")))!.Id;
+        claudeProfileId = (await profiles.GetDefaultAsync(new("claude")))!.Id;
     }
 
     [TestCleanup]
@@ -44,12 +56,14 @@ public sealed class SqlitePersistenceTests
         item.ChangeCommitMessage("AP9: persistierte Nachricht");
         await workItems.SaveAsync(item);
         var now = DateTimeOffset.UtcNow;
-        var attempt = new ExecutionAttempt(ExecutionAttemptId.New(), item.Id, 1, item.PlatformId, item.ModelId,
+        var attempt = new ExecutionAttempt(ExecutionAttemptId.New(), item.Id, 1, item.PlatformId,
+            item.PlatformProfileId, item.ModelId,
             item.Effort, now, now.AddMinutes(1), ExecutionAttemptResult.TechnischErfolgreich, 0, "session-1");
         await history.AddAttemptAsync(attempt);
         await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, now, ExecutionEventSeverity.Information,
             "completed", "Auftrag abgeschlossen", attempt.Id, new Dictionary<string, string> { ["source"] = "test" }));
-        var secondAttempt = new ExecutionAttempt(ExecutionAttemptId.New(), item.Id, 2, item.PlatformId, item.ModelId,
+        var secondAttempt = new ExecutionAttempt(ExecutionAttemptId.New(), item.Id, 2, item.PlatformId,
+            item.PlatformProfileId, item.ModelId,
             item.Effort, now.AddMinutes(2), now.AddMinutes(3), ExecutionAttemptResult.Fehlgeschlagen, 2);
         await history.AddAttemptAsync(secondAttempt);
         await history.AddEventAsync(new ExecutionEvent(Guid.NewGuid(), item.Id, now.AddMinutes(3), ExecutionEventSeverity.Error,
@@ -66,6 +80,7 @@ public sealed class SqlitePersistenceTests
         Assert.AreEqual("AP9: persistierte Nachricht", restored.CommitMessage);
         Assert.AreEqual(2, attempts.Count);
         Assert.AreEqual("session-1", attempts[0].SessionId);
+        Assert.IsTrue(attempts.All(x => x.PlatformProfileId == item.PlatformProfileId));
         Assert.AreEqual(2, events.Count);
         Assert.AreEqual("test", events[0].Data["source"]);
     }
@@ -131,6 +146,97 @@ public sealed class SqlitePersistenceTests
     }
 
     [TestMethod]
+    public async Task PlatformProfilesEnforceDefaultNameAndDirectoryUniquenessAndDisableById()
+    {
+        var repository = new SqlitePlatformProfileRepository(factory!);
+        var root = Path.Combine(Path.GetTempPath(), $"profile-{Guid.NewGuid():N}");
+        var second = new PlatformProfile(PlatformProfileId.New(), new("codex"), "work", "Arbeit", root);
+        await repository.SaveAsync(second);
+
+        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => repository.SaveAsync(
+            new PlatformProfile(PlatformProfileId.New(), new("codex"), "WORK", "Duplikat",
+                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")))));
+        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => repository.SaveAsync(
+            new PlatformProfile(PlatformProfileId.New(), new("codex"), "other", "Duplikat",
+                root.ToUpperInvariant())));
+        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => repository.SaveAsync(
+            new PlatformProfile(PlatformProfileId.New(), new("codex"), "third", "ARBEIT",
+                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")))));
+        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => repository.SaveAsync(
+            PlatformProfile.CreateDefault(PlatformProfileId.New(), new("codex"),
+                userProfileDirectory: Path.Combine(Path.GetTempPath(), "another-user"))));
+
+        Assert.IsTrue(await repository.DisableAsync(second.Id));
+        Assert.IsFalse((await repository.GetAsync(second.Id))!.Enabled);
+        Assert.IsFalse(Directory.Exists(root), "Das Speichern oder Deaktivieren darf den Profilordner nicht anlegen.");
+        Assert.AreEqual(1, (await repository.ListAsync(new("codex"))).Count(x => x.IsDefault));
+    }
+
+    [TestMethod]
+    public async Task WorkItemRejectsProfileFromAnotherPlatform()
+    {
+        var item = new WorkItem(WorkItemId.New(), "Falsches Profil", new(50), new("codex"),
+            claudeProfileId, new("gpt"), new("medium"), new("docs/AP.md"), false,
+            DateTimeOffset.UtcNow);
+
+        await Assert.ThrowsExceptionAsync<InvalidOperationException>(() =>
+            new SqliteWorkItemRepository(factory!).SaveAsync(item));
+    }
+
+    [TestMethod]
+    public async Task MigrationAssignsExistingRowsToDefaultProfilesWithoutDataLoss()
+    {
+        await using var db = await factory!.CreateDbContextAsync();
+        var codex = new PlatformDefinition(new("codex"), "codex",
+            [new PlatformModel(new("gpt"), [new("medium")])], showUsageInStatusBar: true);
+        await new SqlitePlatformRepository(factory).SaveAsync(codex);
+        await new SqliteSettingsRepository(factory).SetAsync("migration.marker", "kept");
+
+        var migrator = db.GetService<IMigrator>();
+        await migrator.MigrateAsync("20260912100000_AddPlatformUiOptions");
+        var workItemId = Guid.NewGuid();
+        var attemptId = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 9, 12, 10, 0, 0, TimeSpan.Zero);
+        await db.Database.ExecuteSqlInterpolatedAsync($$"""
+            INSERT INTO "WorkItems"
+                ("Id", "Title", "Priority", "PlatformId", "ModelId", "Effort", "PromptPath",
+                 "AutoCommit", "CommitMessage", "ProjectId", "CreatedAtUtc", "FirstAttemptStartedAtUtc",
+                 "HasExecutionStarted", "Status", "NormalRetryCount")
+            VALUES ({{workItemId}}, 'Bestand', 50, 'codex', 'gpt', 'medium', 'docs/AP.md',
+                    0, NULL, NULL, {{now}}, {{now}}, 1, {{(int)WorkItemStatus.InBearbeitung}}, 0);
+
+            INSERT INTO "ExecutionAttempts"
+                ("Id", "WorkItemId", "SequenceNumber", "PlatformId", "ModelId", "Effort",
+                 "StartedAtUtc", "CompletedAtUtc", "Result", "ExitCode", "SessionId", "Diagnostic")
+            VALUES ({{attemptId}}, {{workItemId}}, 1, 'codex', 'gpt', 'medium', {{now}}, {{now.AddMinutes(1)}},
+                    {{(int)ExecutionAttemptResult.TechnischErfolgreich}}, 0, 'session-before-ap13', NULL);
+            """);
+
+        await migrator.MigrateAsync();
+
+        var profiles = await new SqlitePlatformProfileRepository(factory).ListAsync();
+        Assert.AreEqual(2, profiles.Count);
+        Assert.IsTrue(profiles.All(x => x.IsDefault && x.Name == PlatformProfile.DefaultName));
+        var codexProfile = profiles.Single(x => x.PlatformId.Value == "codex");
+        Assert.IsTrue(codexProfile.ShowUsageInStatusBar);
+        Assert.AreEqual(Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE")!, ".codex"),
+            codexProfile.ConfigurationDirectory);
+        Assert.AreEqual(codexProfile.Id, (await new SqliteWorkItemRepository(factory)
+            .GetAsync(new(workItemId)))!.PlatformProfileId);
+        Assert.AreEqual(codexProfile.Id, (await new SqliteExecutionHistoryRepository(factory)
+            .ListAttemptsAsync(new(workItemId))).Single().PlatformProfileId);
+        Assert.AreEqual("session-before-ap13", (await new SqliteExecutionHistoryRepository(factory)
+            .ListAttemptsAsync(new(workItemId))).Single().SessionId);
+        Assert.AreEqual("kept", await new SqliteSettingsRepository(factory).GetAsync("migration.marker"));
+
+        await db.Database.OpenConnectionAsync();
+        await using var command = db.Database.GetDbConnection().CreateCommand();
+        command.CommandText = "PRAGMA foreign_key_check;";
+        await using var reader = await command.ExecuteReaderAsync();
+        Assert.IsFalse(await reader.ReadAsync(), "Die migrierte Datenbank darf keine verletzten Fremdschlüssel enthalten.");
+    }
+
+    [TestMethod]
     public async Task ConcurrentLeaseAttemptsReserveAWorkItemOnlyOnce()
     {
         var repository = new SqliteWorkItemRepository(factory!);
@@ -185,7 +291,8 @@ public sealed class SqlitePersistenceTests
         item.MarkAttemptStarted(DateTimeOffset.UtcNow);
         item.CompleteCurrentAttempt(ExecutionAttemptResult.UsageExceeded);
         var now = DateTimeOffset.UtcNow;
-        var attempt = new ExecutionAttempt(ExecutionAttemptId.New(), item.Id, 1, item.PlatformId, item.ModelId,
+        var attempt = new ExecutionAttempt(ExecutionAttemptId.New(), item.Id, 1, item.PlatformId,
+            item.PlatformProfileId, item.ModelId,
             item.Effort, now.AddSeconds(-1), now, ExecutionAttemptResult.UsageExceeded, 1, "session-2");
         var executionEvent = new ExecutionEvent(Guid.NewGuid(), item.Id, now, ExecutionEventSeverity.Error,
             "usage_exceeded", "Usage-Limit erreicht", attempt.Id);
@@ -269,18 +376,22 @@ public sealed class SqlitePersistenceTests
         {
             await restarted.Database.MigrateAsync();
             Assert.AreEqual(0, (await restarted.Database.GetPendingMigrationsAsync()).Count());
+            Assert.IsFalse(restarted.Database.HasPendingModelChanges());
             CollectionAssert.IsSubsetOf(new[]
             {
                 "WorkItems", "Projects", "ExecutionAttempts", "ExecutionEvents", "PlatformUsageBlocks",
-                "ProjectExecutionHolds", "SchedulerLeases", "Settings"
+                "ProjectExecutionHolds", "SchedulerLeases", "Settings", "PlatformProfiles"
             }, (await restarted.Database.SqlQueryRaw<string>(
                 "SELECT name AS Value FROM sqlite_master WHERE type = 'table'").ToListAsync()).ToArray());
         }
     }
 
-    private static WorkItem CreateQueuedWorkItem(ProjectId? projectId = null, string platformId = "codex")
+    private WorkItem CreateQueuedWorkItem(ProjectId? projectId = null, string platformId = "codex")
     {
-        var item = new WorkItem(WorkItemId.New(), "AP", new(50), new(platformId), new("gpt"), new("medium"),
+        var profileId = platformId.Equals("claude", StringComparison.OrdinalIgnoreCase)
+            ? claudeProfileId : codexProfileId;
+        var item = new WorkItem(WorkItemId.New(), "AP", new(50), new(platformId), profileId,
+            new("gpt"), new("medium"),
             new("docs/AP.md"), true, DateTimeOffset.UtcNow, projectId);
         item.TransitionTo(WorkItemStatus.InWarteschlange);
         return item;

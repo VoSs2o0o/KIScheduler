@@ -29,6 +29,7 @@ public static class PersistenceServiceCollectionExtensions
         services.AddSingleton<IWorkItemRepository, SqliteWorkItemRepository>();
         services.AddSingleton<IProjectRepository, SqliteProjectRepository>();
         services.AddSingleton<IPlatformRepository, SqlitePlatformRepository>();
+        services.AddSingleton<IPlatformProfileRepository, SqlitePlatformProfileRepository>();
         services.AddSingleton<IUsagePolicyRepository, SqliteUsagePolicyRepository>();
         services.AddSingleton<IUsageSnapshotRepository, SqliteUsageSnapshotRepository>();
         services.AddSingleton<IExecutionHistoryRepository, SqliteExecutionHistoryRepository>();

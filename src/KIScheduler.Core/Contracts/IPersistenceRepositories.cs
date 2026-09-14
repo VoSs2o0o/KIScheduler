@@ -17,6 +17,16 @@ public interface IPlatformRepository
     Task SaveAsync(PlatformDefinition platform, CancellationToken cancellationToken = default);
 }
 
+public interface IPlatformProfileRepository
+{
+    Task<PlatformProfile?> GetAsync(PlatformProfileId id, CancellationToken cancellationToken = default);
+    Task<PlatformProfile?> GetDefaultAsync(PlatformId platformId, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<PlatformProfile>> ListAsync(PlatformId? platformId = null,
+        CancellationToken cancellationToken = default);
+    Task SaveAsync(PlatformProfile profile, CancellationToken cancellationToken = default);
+    Task<bool> DisableAsync(PlatformProfileId id, CancellationToken cancellationToken = default);
+}
+
 public interface IUsagePolicyRepository
 {
     Task<IReadOnlyList<UsagePolicy>> ListAsync(PlatformId? platformId = null,

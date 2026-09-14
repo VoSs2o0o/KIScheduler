@@ -9,6 +9,7 @@ namespace KIScheduler.Tests.Platforms;
 [TestClass]
 public sealed class ClaudeAdapterTests
 {
+    private static readonly PlatformProfileId ProfileId = new(new Guid("22222222-2222-2222-2222-222222222222"));
     private static readonly DateTimeOffset Now = new(2026, 9, 11, 12, 0, 0, TimeSpan.Zero);
 
     [TestMethod]
@@ -18,7 +19,7 @@ public sealed class ClaudeAdapterTests
             "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"session-7\"}",
             "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"Fertig\",\"session_id\":\"session-7\"}"));
         var platform = new ClaudePlatform(runner, Options.Create(new ClaudeOptions()));
-        var request = new PlatformExecutionRequest(ClaudePlatform.Id, new ModelId("claude-sonnet-5"),
+        var request = new PlatformExecutionRequest(ClaudePlatform.Id, ProfileId, new ModelId("claude-sonnet-5"),
             new EffortLevel("high"), "Prompt über stdin", Environment.CurrentDirectory)
         {
             SessionId = "session-7"
@@ -195,7 +196,7 @@ public sealed class ClaudeAdapterTests
         return new ClaudeUsageProvider(new CommandRegexReader(runner), new TestClock(), options);
     }
 
-    private static PlatformExecutionRequest Request() => new(ClaudePlatform.Id, new ModelId("sonnet"),
+    private static PlatformExecutionRequest Request() => new(ClaudePlatform.Id, ProfileId, new ModelId("sonnet"),
         new EffortLevel("medium"), "prompt", Environment.CurrentDirectory);
 
     private static ProcessRunResult Completed(int exitCode, params string[] stdout) => new(

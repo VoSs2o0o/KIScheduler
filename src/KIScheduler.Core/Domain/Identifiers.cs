@@ -16,6 +16,14 @@ public readonly record struct ExecutionAttemptId
     public override string ToString() => Value.ToString("D");
 }
 
+public readonly record struct PlatformProfileId
+{
+    public PlatformProfileId(Guid value) => Value = DomainValidation.Id(value, nameof(value));
+    public Guid Value { get; }
+    public static PlatformProfileId New() => new(Guid.NewGuid());
+    public override string ToString() => Value.ToString("D");
+}
+
 public readonly record struct ProjectId
 {
     public ProjectId(Guid value) => Value = DomainValidation.Id(value, nameof(value));

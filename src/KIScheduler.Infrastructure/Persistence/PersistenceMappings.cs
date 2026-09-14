@@ -13,6 +13,7 @@ internal static class PersistenceMappings
         Title = value.Title,
         Priority = value.Priority.Value,
         PlatformId = value.PlatformId.Value,
+        PlatformProfileId = value.PlatformProfileId.Value,
         ModelId = value.ModelId.Value,
         Effort = value.Effort.Value,
         PromptPath = value.PromptPath.Value,
@@ -27,7 +28,7 @@ internal static class PersistenceMappings
     };
 
     public static WorkItem ToDomain(WorkItemRow value) => WorkItem.Rehydrate(
-        new(value.Id), value.Title, new(value.Priority), new(value.PlatformId), new(value.ModelId),
+        new(value.Id), value.Title, new(value.Priority), new(value.PlatformId), new(value.PlatformProfileId), new(value.ModelId),
         new(value.Effort), new(value.PromptPath), value.AutoCommit, value.CreatedAtUtc,
         value.ProjectId.HasValue ? new ProjectId(value.ProjectId.Value) : null,
         (WorkItemStatus)value.Status, value.FirstAttemptStartedAtUtc, value.HasExecutionStarted,
@@ -39,6 +40,7 @@ internal static class PersistenceMappings
         WorkItemId = value.WorkItemId.Value,
         SequenceNumber = value.SequenceNumber,
         PlatformId = value.PlatformId.Value,
+        PlatformProfileId = value.PlatformProfileId.Value,
         ModelId = value.ModelId.Value,
         Effort = value.Effort.Value,
         StartedAtUtc = value.StartedAtUtc,
@@ -50,7 +52,7 @@ internal static class PersistenceMappings
     };
 
     public static ExecutionAttempt ToDomain(ExecutionAttemptRow value) => new(new(value.Id), new(value.WorkItemId),
-        value.SequenceNumber, new(value.PlatformId), new(value.ModelId), new(value.Effort), value.StartedAtUtc,
+        value.SequenceNumber, new(value.PlatformId), new(value.PlatformProfileId), new(value.ModelId), new(value.Effort), value.StartedAtUtc,
         value.CompletedAtUtc, (ExecutionAttemptResult)value.Result, value.ExitCode, value.SessionId, value.Diagnostic);
 
     public static ExecutionEventRow ToRow(ExecutionEvent value) => new()

@@ -102,7 +102,9 @@ internal static class Program
                     await Console.Out.FlushAsync();
                     continue;
                 }
-                Console.WriteLine($"{{\"id\":{id.GetRawText()},\"result\":{{\"rateLimitsByLimitId\":{{\"codex\":{{\"limitId\":\"codex\",\"limitName\":\"Codex\",\"primary\":{{\"usedPercent\":25,\"windowDurationMins\":300,\"resetsAt\":1893456000,\"future\":1}},\"secondary\":null,\"rateLimitReachedType\":null,\"unknown\":true}}}},\"futureTopLevel\":{{}}}}}}");
+                string profileHome = JsonSerializer.Serialize(Environment.GetEnvironmentVariable("CODEX_HOME"));
+                string sqliteHome = JsonSerializer.Serialize(Environment.GetEnvironmentVariable("CODEX_SQLITE_HOME"));
+                Console.WriteLine($"{{\"id\":{id.GetRawText()},\"result\":{{\"rateLimitsByLimitId\":{{\"codex\":{{\"limitId\":\"codex\",\"limitName\":\"Codex\",\"primary\":{{\"usedPercent\":25,\"windowDurationMins\":300,\"resetsAt\":1893456000,\"future\":1}},\"secondary\":null,\"rateLimitReachedType\":null,\"unknown\":true}}}},\"profileHome\":{profileHome},\"sqliteHome\":{sqliteHome},\"futureTopLevel\":{{}}}}}}");
                 Console.WriteLine("{\"method\":\"account/rateLimits/updated\",\"params\":{\"rateLimits\":{\"limitId\":\"codex\",\"primary\":{\"usedPercent\":31,\"windowDurationMins\":300,\"resetsAt\":1893456000}}}}");
             }
             await Console.Out.FlushAsync();

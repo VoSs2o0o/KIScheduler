@@ -8,6 +8,8 @@ public interface IUsageProvider
     UsageProviderCapabilities Capabilities { get; }
     Task<UsageReadResult> ReadAsync(bool forceRefresh,
         CancellationToken cancellationToken = default);
+    Task<UsageReadResult> ReadAsync(PlatformProfileId profileId, bool forceRefresh,
+        CancellationToken cancellationToken = default) => ReadAsync(forceRefresh, cancellationToken);
     event EventHandler<UsageChangedEventArgs>? UsageChanged;
 }
 
@@ -25,7 +27,8 @@ public enum UsageReadStatus
 
 public sealed record UsageReadResult
 {
-    public UsageReadResult(UsageReadStatus status, UsageSnapshot? snapshot = null, string? message = null)
+    public UsageReadResult(UsageReadStatus status, UsageSnapshot? snapshot = null, string? message = null,
+        PlatformProfileId? platformProfileId = null)
     {
         if (status == UsageReadStatus.Available && snapshot is null)
         {
@@ -35,11 +38,13 @@ public sealed record UsageReadResult
         Status = status;
         Snapshot = snapshot;
         Message = string.IsNullOrWhiteSpace(message) ? null : message.Trim();
+        PlatformProfileId = platformProfileId;
     }
 
     public UsageReadStatus Status { get; }
     public UsageSnapshot? Snapshot { get; }
     public string? Message { get; }
+    public PlatformProfileId? PlatformProfileId { get; }
     public bool IsAvailable => Status == UsageReadStatus.Available;
 
     public static UsageReadResult Available(UsageSnapshot snapshot) =>
@@ -47,6 +52,9 @@ public sealed record UsageReadResult
 
     public static UsageReadResult Unknown(string? message = null) =>
         new(UsageReadStatus.Unknown, message: message);
+
+    public UsageReadResult ForProfile(PlatformProfileId platformProfileId) =>
+        new(Status, Snapshot, Message, platformProfileId);
 }
 
 public sealed class UsageChangedEventArgs : EventArgs
@@ -55,4 +63,5 @@ public sealed class UsageChangedEventArgs : EventArgs
         Result = result ?? throw new ArgumentNullException(nameof(result));
 
     public UsageReadResult Result { get; }
+    public PlatformProfileId? PlatformProfileId => Result.PlatformProfileId;
 }

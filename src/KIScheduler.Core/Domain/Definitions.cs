@@ -78,6 +78,69 @@ public sealed class PlatformDefinition
     public bool Supports(ModelId modelId, EffortLevel effort) => Models.Any(model => model.Supports(modelId, effort));
 }
 
+public sealed class PlatformProfile
+{
+    public const string DefaultName = "default";
+    public const string DefaultDisplayName = "Standard";
+
+    public PlatformProfile(PlatformProfileId id, PlatformId platformId, string name, string displayName,
+        string configurationDirectory, bool enabled = true, bool isDefault = false,
+        bool showUsageInStatusBar = false)
+    {
+        DomainValidation.Id(id.Value, nameof(id));
+        Id = id;
+        PlatformId = platformId ?? throw new ArgumentNullException(nameof(platformId));
+        Name = DomainValidation.Required(name, nameof(name));
+        DisplayName = DomainValidation.Required(displayName, nameof(displayName));
+        ConfigurationDirectory = NormalizeConfigurationDirectory(configurationDirectory);
+        Enabled = enabled;
+        IsDefault = isDefault;
+        ShowUsageInStatusBar = showUsageInStatusBar;
+
+        if (isDefault && !Name.Equals(DefaultName, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException($"Das Standardprofil muss den Namen '{DefaultName}' tragen.", nameof(name));
+        if (!isDefault && Name.Equals(DefaultName, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException($"Der Name '{DefaultName}' ist dem Standardprofil vorbehalten.", nameof(name));
+    }
+
+    public PlatformProfileId Id { get; }
+    public PlatformId PlatformId { get; }
+    public string Name { get; }
+    public string DisplayName { get; }
+    public string ConfigurationDirectory { get; }
+    public bool Enabled { get; }
+    public bool IsDefault { get; }
+    public bool ShowUsageInStatusBar { get; }
+
+    public static PlatformProfile CreateDefault(PlatformProfileId id, PlatformId platformId,
+        bool showUsageInStatusBar = false, string? userProfileDirectory = null)
+    {
+        if (string.IsNullOrWhiteSpace(userProfileDirectory))
+        {
+            userProfileDirectory = Environment.GetEnvironmentVariable("USERPROFILE");
+            if (string.IsNullOrWhiteSpace(userProfileDirectory))
+                userProfileDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        }
+        userProfileDirectory = DomainValidation.Required(userProfileDirectory, nameof(userProfileDirectory));
+        var providerDirectory = platformId.Value.Equals("codex", StringComparison.OrdinalIgnoreCase)
+            ? ".codex"
+            : platformId.Value.Equals("claude", StringComparison.OrdinalIgnoreCase)
+                ? ".claude"
+                : $".{platformId.Value}";
+        return new PlatformProfile(id, platformId, DefaultName, DefaultDisplayName,
+            Path.Combine(userProfileDirectory, providerDirectory), isDefault: true,
+            showUsageInStatusBar: showUsageInStatusBar);
+    }
+
+    private static string NormalizeConfigurationDirectory(string value)
+    {
+        value = DomainValidation.Required(value, nameof(value));
+        if (!Path.IsPathFullyQualified(value))
+            throw new ArgumentException("Der Konfigurationsordner muss ein absoluter Pfad sein.", nameof(value));
+        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(value));
+    }
+}
+
 public sealed class PlatformModel
 {
     public PlatformModel(ModelId id, IEnumerable<EffortLevel> supportedEfforts)

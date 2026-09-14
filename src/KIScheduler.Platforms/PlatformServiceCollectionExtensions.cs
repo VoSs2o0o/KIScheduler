@@ -54,7 +54,8 @@ public static class PlatformServiceCollectionExtensions
             if (configuredArguments is { Length: > 0 })
                 options.AppServerArguments = [.. configuredArguments];
         });
-        services.AddSingleton<ICodexAppServerClient, CodexAppServerClient>();
+        services.AddSingleton<ICodexProfileResolver, CodexProfileResolver>();
+        services.AddSingleton<ICodexAppServerClientFactory, CodexAppServerClientFactory>();
         services.AddAiPlatform<CodexPlatform>();
         services.AddUsageProvider<CodexUsageProvider>();
         return services;

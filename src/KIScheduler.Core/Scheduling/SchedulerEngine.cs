@@ -386,7 +386,8 @@ public sealed class SchedulerEngine : ISchedulerEngine
                 ?? throw new PlatformConfigurationException($"Plattform '{item.PlatformId.Value}' ist nicht konfiguriert.");
             var adapter = platforms.GetRequired(item.PlatformId);
             var prompt = await fileSystem.ReadAllTextAsync(promptPath, cancellationToken).ConfigureAwait(false);
-            var request = new PlatformExecutionRequest(item.PlatformId, item.ModelId, item.Effort, prompt, project.RootPath)
+            var request = new PlatformExecutionRequest(item.PlatformId, item.PlatformProfileId,
+                item.ModelId, item.Effort, prompt, project.RootPath)
             {
                 SessionId = resumeSessionId,
                 Timeout = options.ExecutionTimeout
@@ -463,7 +464,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
             }
             var sequence = (await history.ListAttemptsAsync(item.Id, CancellationToken.None).ConfigureAwait(false)).Count + 1;
             attempt = new ExecutionAttempt(ExecutionAttemptId.New(), item.Id, sequence, item.PlatformId,
-                item.ModelId, item.Effort, startedAt, completedAt, attemptResult, result.ExitCode,
+                item.PlatformProfileId, item.ModelId, item.Effort, startedAt, completedAt, attemptResult, result.ExitCode,
                 result.SessionId ?? resumeSessionId, diagnostic);
             item.CompleteCurrentAttempt(attemptResult);
 

@@ -23,6 +23,7 @@ public sealed class SchedulerUiService(
     IWorkItemRepository workItems,
     IProjectRepository projects,
     IPlatformRepository platforms,
+    IPlatformProfileRepository profiles,
     IUsagePolicyRepository policies,
     IUsageSnapshotRepository snapshots,
     IExecutionHistoryRepository history,
@@ -112,6 +113,11 @@ public sealed class SchedulerUiService(
         if (!definition.Enabled && (existing is null || !PlatformEquals(definition.Id, existing.PlatformId)))
             throw new InvalidOperationException($"Plattform '{model.PlatformId}' ist deaktiviert.");
         var platformId = definition.Id;
+        var platformProfile = existing is not null && PlatformEquals(definition.Id, existing.PlatformId)
+            ? await profiles.GetAsync(existing.PlatformProfileId, cancellationToken).ConfigureAwait(false)
+            : await profiles.GetDefaultAsync(platformId, cancellationToken).ConfigureAwait(false);
+        if (platformProfile is null || !PlatformEquals(platformProfile.PlatformId, platformId))
+            throw new InvalidOperationException($"Für Plattform '{platformId.Value}' ist kein gültiges Standardprofil konfiguriert.");
         var modelId = new ModelId(model.ModelId);
         var effort = new EffortLevel(model.Effort);
         if (!definition.Supports(modelId, effort))
@@ -128,7 +134,7 @@ public sealed class SchedulerUiService(
         if (existing is null)
         {
             item = new WorkItem(WorkItemId.New(), model.Title, new WorkItemPriority(model.Priority),
-                platformId, modelId, effort, promptPath, model.AutoCommit, clock.UtcNow, project.Id,
+                platformId, platformProfile.Id, modelId, effort, promptPath, model.AutoCommit, clock.UtcNow, project.Id,
                 model.CommitMessage);
             item.TransitionTo(WorkItemStatus.InWarteschlange);
         }
@@ -139,7 +145,7 @@ public sealed class SchedulerUiService(
             existing.ChangeCommitMessage(model.CommitMessage);
             if (!existing.HasExecutionStarted || existing.PlatformId != platformId
                 || existing.ModelId != modelId || existing.Effort != effort)
-                existing.ChangeExecutionConfiguration(platformId, modelId, effort);
+                existing.ChangeExecutionConfiguration(platformId, platformProfile.Id, modelId, effort);
             item = existing;
         }
         await workItems.SaveAsync(item, cancellationToken).ConfigureAwait(false);
@@ -177,7 +183,7 @@ public sealed class SchedulerUiService(
             or WorkItemStatus.ErfolgreichMitWarnung or WorkItemStatus.Abgebrochen))
             throw new InvalidOperationException($"'{item.Status}' kann nicht erneut eingereiht werden.");
         var replacement = new WorkItem(WorkItemId.New(), item.Title, item.Priority, item.PlatformId,
-            item.ModelId, item.Effort, item.PromptPath, item.AutoCommit, clock.UtcNow, item.ProjectId,
+            item.PlatformProfileId, item.ModelId, item.Effort, item.PromptPath, item.AutoCommit, clock.UtcNow, item.ProjectId,
             item.CommitMessage);
         replacement.TransitionTo(WorkItemStatus.InWarteschlange);
         await workItems.SaveAsync(replacement, cancellationToken).ConfigureAwait(false);
@@ -391,7 +397,8 @@ public sealed class SchedulerUiService(
     }
 }
 
-internal sealed class UiDefaultsInitializer(IPlatformRepository platforms, IUsagePolicyRepository policies,
+internal sealed class UiDefaultsInitializer(IPlatformRepository platforms, IPlatformProfileRepository profiles,
+    IUsagePolicyRepository policies,
     IConfiguration configuration) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -408,6 +415,13 @@ internal sealed class UiDefaultsInitializer(IPlatformRepository platforms, IUsag
             await platforms.SaveAsync(new PlatformDefinition(new PlatformId("claude"),
                 configuration["Claude:Executable"] ?? "claude",
                 [new PlatformModel(new ModelId("sonnet"), [new EffortLevel("low"), new EffortLevel("medium"), new EffortLevel("high")])]), cancellationToken);
+        }
+        configured = await platforms.ListAsync(cancellationToken);
+        foreach (var platform in configured)
+        {
+            if (await profiles.GetDefaultAsync(platform.Id, cancellationToken) is null)
+                await profiles.SaveAsync(PlatformProfile.CreateDefault(PlatformProfileId.New(), platform.Id,
+                    platform.ShowUsageInStatusBar), cancellationToken);
         }
         if ((await policies.ListAsync(cancellationToken: cancellationToken)).Count == 0)
         {

@@ -10,13 +10,15 @@ public sealed class CodexPlatform : IAiPlatform
     private readonly IProcessRunner processRunner;
     private readonly CodexOptions options;
     private readonly IPlatformRepository? platformRepository;
+    private readonly ICodexProfileResolver profileResolver;
 
     public CodexPlatform(IProcessRunner processRunner, IOptions<CodexOptions> options,
-        IPlatformRepository? platformRepository = null)
+        ICodexProfileResolver profileResolver, IPlatformRepository? platformRepository = null)
     {
         this.processRunner = processRunner ?? throw new ArgumentNullException(nameof(processRunner));
         this.options = options?.Value ?? throw new ArgumentNullException(nameof(options));
         this.platformRepository = platformRepository;
+        this.profileResolver = profileResolver ?? throw new ArgumentNullException(nameof(profileResolver));
         this.options.Validate();
     }
 
@@ -25,11 +27,43 @@ public sealed class CodexPlatform : IAiPlatform
 
     public async Task<PlatformHealth> CheckAvailabilityAsync(CancellationToken cancellationToken = default)
     {
+        PlatformProfile profile;
+        try
+        {
+            profile = await profileResolver.ResolveDefaultAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (CodexProfileException exception)
+        {
+            return new PlatformHealth(PlatformHealthStatus.Misconfigured, exception.Message);
+        }
+        return await CheckAvailabilityAsync(profile, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<PlatformHealth> CheckAvailabilityAsync(PlatformProfileId profileId,
+        CancellationToken cancellationToken = default)
+    {
+        PlatformProfile profile;
+        try
+        {
+            profile = await profileResolver.ResolveAsync(profileId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CodexProfileException exception)
+        {
+            return new PlatformHealth(PlatformHealthStatus.Misconfigured, exception.Message);
+        }
+        return await CheckAvailabilityAsync(profile, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<PlatformHealth> CheckAvailabilityAsync(PlatformProfile profile,
+        CancellationToken cancellationToken)
+    {
         var executable = await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false);
+        IReadOnlyDictionary<string, string> environment = CodexProcessEnvironment.ForProfile(
+            executable, profile.ConfigurationDirectory);
         ProcessRunResult result = await processRunner.RunAsync(new ProcessRunRequest(executable)
         {
             Arguments = ["--version"],
-            EnvironmentVariables = CodexProcessEnvironment.ForExecutable(executable),
+            EnvironmentVariables = environment,
             Timeout = options.AvailabilityTimeout
         }, cancellationToken).ConfigureAwait(false);
 
@@ -44,6 +78,24 @@ public sealed class CodexPlatform : IAiPlatform
                 FirstNonEmpty(result.StandardError, result.StandardOutput) ?? "Codex CLI meldete einen Fehler.");
 
         string version = FirstNonEmpty(result.StandardOutput, result.StandardError) ?? "Codex CLI verfügbar.";
+        ProcessRunResult login = await processRunner.RunAsync(new ProcessRunRequest(executable)
+        {
+            Arguments = ["login", "status"],
+            EnvironmentVariables = environment,
+            Timeout = options.AvailabilityTimeout,
+            SuppressOutputLogging = true
+        }, cancellationToken).ConfigureAwait(false);
+        if (login.TerminationReason == ProcessTerminationReason.StartFailed)
+            return new PlatformHealth(PlatformHealthStatus.ExecutableMissing,
+                $"Codex CLI konnte für das Profil '{profile.DisplayName}' nicht gestartet werden: {login.StartError}");
+        if (login.TerminationReason is ProcessTerminationReason.Cancelled or ProcessTerminationReason.TimedOut)
+            return new PlatformHealth(PlatformHealthStatus.Unavailable,
+                $"Die Anmeldeprüfung des Codex-Profils '{profile.DisplayName}' wurde abgebrochen oder hat das Zeitlimit überschritten.");
+        if (login.ExitCode != 0)
+            return new PlatformHealth(PlatformHealthStatus.Misconfigured,
+                $"Das Codex-Profil '{profile.DisplayName}' enthält keine gültige CLI-Anmeldung. " +
+                "Getrennte Profile benötigen den dateibasierten Credential-Store im jeweiligen CODEX_HOME.");
+
         return new PlatformHealth(PlatformHealthStatus.Available, version);
     }
 
@@ -54,11 +106,23 @@ public sealed class CodexPlatform : IAiPlatform
         if (!string.Equals(request.PlatformId.Value, Id.Value, StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Die Ausführungsanfrage gehört nicht zur Codex-Plattform.", nameof(request));
 
+        PlatformProfile profile;
+        try
+        {
+            profile = await profileResolver.ResolveAsync(request.PlatformProfileId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (CodexProfileException exception)
+        {
+            return new PlatformExecutionResult(PlatformExecutionOutcome.HumanReviewRequired,
+                message: exception.Message, failureKind: PlatformFailureKind.Authentication);
+        }
+
         var executable = await ResolveExecutableAsync(cancellationToken).ConfigureAwait(false);
         ProcessRunResult processResult = await processRunner.RunAsync(new ProcessRunRequest(executable)
         {
             Arguments = BuildArguments(request),
-            EnvironmentVariables = CodexProcessEnvironment.ForExecutable(executable),
+            EnvironmentVariables = CodexProcessEnvironment.ForProfile(executable, profile.ConfigurationDirectory),
             WorkingDirectory = request.WorkingDirectory,
             StandardInput = request.Prompt,
             Timeout = request.Timeout,

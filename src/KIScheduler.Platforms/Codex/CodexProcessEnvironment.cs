@@ -2,7 +2,7 @@ namespace KIScheduler.Platforms.Codex;
 
 internal static class CodexProcessEnvironment
 {
-    public static IReadOnlyDictionary<string, string> ForExecutable(string executable)
+    public static IReadOnlyDictionary<string, string> ForProfile(string executable, string configurationDirectory)
     {
         // A desktop-launched scheduler can inherit a service/sandbox profile although the selected
         // Codex installation and its authenticated .codex directory belong to the interactive user.
@@ -12,9 +12,13 @@ internal static class CodexProcessEnvironment
             profile = Environment.GetEnvironmentVariable("USERPROFILE");
         if (string.IsNullOrWhiteSpace(profile))
             profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return string.IsNullOrWhiteSpace(profile)
-            ? new Dictionary<string, string>()
-            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["USERPROFILE"] = profile };
+        var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["CODEX_HOME"] = configurationDirectory,
+            ["CODEX_SQLITE_HOME"] = configurationDirectory
+        };
+        if (!string.IsNullOrWhiteSpace(profile)) environment["USERPROFILE"] = profile;
+        return environment;
     }
 
     private static string? InferFromExecutable(string executable)

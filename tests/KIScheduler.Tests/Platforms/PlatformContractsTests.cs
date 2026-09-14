@@ -152,7 +152,8 @@ public sealed class PlatformContractsTests
     ]);
 
     private static PlatformExecutionRequest CreateRequest(ModelId? model = null, EffortLevel? effort = null) =>
-        new(CodexId, model ?? ModelId, effort ?? Medium, "Arbeite AP ab", "C:\\project");
+        new(CodexId, PlatformProfileId.New(), model ?? ModelId, effort ?? Medium,
+            "Arbeite AP ab", "C:\\project");
 
     private static async Task WaitUntilAsync(Func<bool> condition)
     {

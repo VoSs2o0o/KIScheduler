@@ -3,7 +3,7 @@ namespace KIScheduler.Core.Domain;
 public sealed class WorkItem
 {
     public WorkItem(WorkItemId id, string title, WorkItemPriority priority, PlatformId platformId,
-        ModelId modelId, EffortLevel effort, PromptPath promptPath, bool autoCommit,
+        PlatformProfileId platformProfileId, ModelId modelId, EffortLevel effort, PromptPath promptPath, bool autoCommit,
         DateTimeOffset createdAtUtc, ProjectId? projectId = null, string? commitMessage = null)
     {
         DomainValidation.Id(id.Value, nameof(id));
@@ -11,6 +11,8 @@ public sealed class WorkItem
         Title = DomainValidation.Required(title, nameof(title));
         Priority = priority;
         PlatformId = platformId ?? throw new ArgumentNullException(nameof(platformId));
+        DomainValidation.Id(platformProfileId.Value, nameof(platformProfileId));
+        PlatformProfileId = platformProfileId;
         ModelId = modelId ?? throw new ArgumentNullException(nameof(modelId));
         Effort = effort ?? throw new ArgumentNullException(nameof(effort));
         PromptPath = promptPath ?? throw new ArgumentNullException(nameof(promptPath));
@@ -25,6 +27,7 @@ public sealed class WorkItem
     public string Title { get; private set; }
     public WorkItemPriority Priority { get; private set; }
     public PlatformId PlatformId { get; private set; }
+    public PlatformProfileId PlatformProfileId { get; private set; }
     public ModelId ModelId { get; private set; }
     public EffortLevel Effort { get; private set; }
     public PromptPath PromptPath { get; private set; }
@@ -41,7 +44,7 @@ public sealed class WorkItem
     public int NormalRetryCount { get; private set; }
 
     public static WorkItem Rehydrate(WorkItemId id, string title, WorkItemPriority priority,
-        PlatformId platformId, ModelId modelId, EffortLevel effort, PromptPath promptPath,
+        PlatformId platformId, PlatformProfileId platformProfileId, ModelId modelId, EffortLevel effort, PromptPath promptPath,
         bool autoCommit, DateTimeOffset createdAtUtc, ProjectId? projectId, WorkItemStatus status,
         DateTimeOffset? firstAttemptStartedAtUtc, bool hasExecutionStarted, int normalRetryCount,
         string? commitMessage = null)
@@ -56,7 +59,7 @@ public sealed class WorkItem
             throw new ArgumentOutOfRangeException(nameof(normalRetryCount));
         }
 
-        var item = new WorkItem(id, title, priority, platformId, modelId, effort, promptPath,
+        var item = new WorkItem(id, title, priority, platformId, platformProfileId, modelId, effort, promptPath,
             autoCommit, createdAtUtc, projectId, commitMessage)
         {
             Status = status,
@@ -119,11 +122,14 @@ public sealed class WorkItem
         TransitionTo(target);
     }
 
-    public void ChangeExecutionConfiguration(PlatformId platformId, ModelId modelId, EffortLevel effort)
+    public void ChangeExecutionConfiguration(PlatformId platformId, PlatformProfileId platformProfileId,
+        ModelId modelId, EffortLevel effort)
     {
         EnsureCanEdit();
 
         PlatformId = platformId ?? throw new ArgumentNullException(nameof(platformId));
+        DomainValidation.Id(platformProfileId.Value, nameof(platformProfileId));
+        PlatformProfileId = platformProfileId;
         ModelId = modelId ?? throw new ArgumentNullException(nameof(modelId));
         Effort = effort ?? throw new ArgumentNullException(nameof(effort));
     }

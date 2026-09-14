@@ -65,13 +65,14 @@ Für Hosting, Dependency Injection, Konfiguration und Logging werden die üblich
 
 ### 5.1 Domäne
 
-- `WorkItem`: Auftrag und aktuelle Planung
+- `WorkItem`: Auftrag und aktuelle Planung einschließlich fest gewähltem Plattformprofil
 - `ExecutionAttempt`: unveränderliche Historie eines Ausführungsversuchs
 - `ProjectDefinition`: Projektroot, Zielbranch und optionale Prüfkommandos
 - `PlatformDefinition`: CLI, Modelle, Effort-Stufen und Kapazität
+- `PlatformProfile`: benannter, profilbezogener Konfigurationsordner für getrennte Anmeldungen
 - `UsagePolicy`: zeitabhängige Verbrauchsgrenze
-- `UsageSnapshot`: gelesene Usage-Fenster und Resetzeitpunkte
-- `PlatformUsageBlock`: temporäre Plattformsperre nach einem serverseitig gemeldeten Usage-Limit
+- `UsageSnapshot`: je Plattformprofil gelesene Usage-Fenster und Resetzeitpunkte
+- `PlatformUsageBlock`: temporäre Profilsperre nach einem serverseitig gemeldeten Usage-Limit
 - `ProjectExecutionHold`: projektweite Sperre nach einer unterbrochenen, möglicherweise nur teilweise ausgeführten Aufgabe
 - `SchedulerLease`: atomare Reservierung eines Auftrags
 - `ExecutionEvent`: strukturierte Ereignisse und Diagnose
@@ -84,6 +85,36 @@ Ausführung und Usage-Ermittlung sind zwei unabhängige Erweiterungspunkte:
 - `IUsageProvider` liest ausschließlich Kontingentfenster, Resetzeitpunkte und erreichte Limits. Er startet keine KI-Aufträge.
 
 Beide Implementierungen werden über dieselbe stabile `PlatformId` verbunden und separat über Dependency Injection registriert. Dadurch kann sich beispielsweise die Claude-Usage-Ausgabe ändern, ohne die Claude-Ausführungsklasse anzupassen.
+
+### 5.3 Plattformprofile
+
+Eine Plattform kann mehrere benannte Profile mit getrennten Anmeldungen besitzen. Das Profil ist keine fortsetzbare KI-Sitzung: Eine Sitzungs-ID bleibt ein Laufzeitergebnis für Resume, während das Plattformprofil bereits bei der Auftragserstellung fest gewählt wird.
+
+Ein `PlatformProfile` besitzt mindestens:
+
+- eine stabile `PlatformProfileId`
+- die zugehörige `PlatformId`
+- einen innerhalb der Plattform eindeutigen Anzeigenamen
+- einen normalisierten absoluten Konfigurationsordner
+- `Enabled`, `IsDefault` und `ShowUsageInStatusBar`
+
+Je Plattform existiert genau ein Standardprofil. Anbieter vergeben dafür keinen fachlichen Namen; KIScheduler verwendet intern `default` und zeigt `Standard` an. Die Standardpfade werden beim erstmaligen Anlegen unabhängig von geerbten Provider-Variablen aus dem Windows-Benutzerprofil gebildet:
+
+```text
+Codex:  %USERPROFILE%\.codex
+Claude: %USERPROFILE%\.claude
+```
+
+Ein explizit gespeicherter Profilordner hat danach immer Vorrang. Geerbte Werte von `CODEX_HOME`, `CODEX_SQLITE_HOME` oder `CLAUDE_CONFIG_DIR` dürfen weder das Standardprofil bestimmen noch unbemerkt in einen Kindprozess gelangen. Jeder Ausführungs-, Health- und Usage-Prozess erhält die Umgebung des ausgewählten Profils ausdrücklich:
+
+```text
+Codex:  CODEX_HOME=<Profilordner>, CODEX_SQLITE_HOME=<Profilordner>
+Claude: CLAUDE_CONFIG_DIR=<Profilordner>
+```
+
+Eine profilinterne Codex-Konfiguration von `sqlite_home` darf gemäß der Codex-Prioritätsregeln weiterhin einen abweichenden SQLite-Speicherort bestimmen. Für zuverlässig getrennte Codex-Anmeldungen wird der dateibasierte Credential-Store unter dem jeweiligen `CODEX_HOME` vorausgesetzt beziehungsweise durch die Profilprüfung verifiziert. KIScheduler speichert, kopiert oder löscht keine Credential-Dateien.
+
+Ein Auftrag behält sein Profil über alle Versuche und Resume-Vorgänge hinweg. Nach dem ersten Ausführungsbeginn ist das Profil ebenso unveränderlich wie Plattform, Modell und Effort. Entfernen in der Oberfläche archiviert beziehungsweise deaktiviert nur die KIScheduler-Referenz; der Profilordner wird nie gelöscht.
 
 Vorgesehene Verträge:
 
@@ -217,8 +248,8 @@ Der Scheduler arbeitet in kurzen, konfigurierbaren Intervallen:
 
 1. Plattformzustand und hinreichend alte Usage-Snapshots aktualisieren.
 2. fällige Aufträge aus `InWarteschlange` und `WartetAufUsage` laden.
-3. feste Plattform, Modell, Projekt, Abhängigkeiten und Zeitregeln prüfen.
-4. Aufträge für eine bereits belegte Plattform ausschließen.
+3. festes Plattformprofil, Modell, Projekt, Abhängigkeiten und Zeitregeln prüfen.
+4. Aufträge für eine bereits belegte Plattform ausschließen; unterschiedliche Profile erhöhen die Parallelität zunächst nicht.
 5. Aufträge für ein bereits belegtes Projekt ausschließen.
 6. pro freier Plattform den Auftrag mit höchster effektiver Priorität reservieren.
 7. Codex- und Claude-Auftrag gegebenenfalls parallel starten.
@@ -240,12 +271,12 @@ Bei `UsageExceeded` gelten atomar folgende Regeln:
 1. Der Ausführungsversuch endet mit Ergebnis `UsageExceeded` und erzeugt ein Ereignis der Schwere `Error`; ein vorhandener nicht-null CLI-Exitcode wird zusätzlich gespeichert.
 2. Der Auftrag wechselt zu `WartetAufUsage`. Der normale Fehler-/Retry-Zähler wird nicht erhöht.
 3. Es wird kein Auto-Commit ausgeführt, da die Aufgabe unvollständig sein kann.
-4. Der aktuelle Usage-Snapshot wird sofort verworfen und neu abgefragt.
-5. Für die betroffene Plattform wird ein `PlatformUsageBlock` gesetzt. Dadurch starten auf dieser Plattform in keinem Projekt weitere Aufträge, solange das Limit serverseitig erreicht ist beziehungsweise die effektive Grenze nicht unterschritten wird.
+4. Der aktuelle Usage-Snapshot des betroffenen Profils wird sofort verworfen und neu abgefragt.
+5. Für das betroffene Plattformprofil wird ein `PlatformUsageBlock` gesetzt. Andere Profile derselben Plattform bleiben verwendbar; nur das betroffene Profil startet keine weiteren Aufträge, solange das Limit serverseitig erreicht ist beziehungsweise die effektive Grenze nicht unterschritten wird.
 6. Für das betroffene Projekt wird ein `ProjectExecutionHold` gesetzt. Dadurch starten auch über die andere Plattform keine weiteren Prompts dieses Projekts, weil der Arbeitsbaum teilweise verändert worden sein kann.
 7. Andere Plattformen dürfen in anderen Projekten weiterarbeiten.
-8. Nach dem Reset genügt die Uhrzeit allein nicht: Erst ein frischer Usage-Snapshot mit `UsedPercent < EffektiveGrenze` und ohne erreichten Limitstatus hebt den Plattformblock auf.
-9. Der unterbrochene Auftrag hat Vorrang und wird in derselben Plattform-Sitzung fortgesetzt, sofern eine Sitzungs-ID und Resume-Unterstützung vorhanden sind.
+8. Nach dem Reset genügt die Uhrzeit allein nicht: Erst ein frischer Usage-Snapshot desselben Profils mit `UsedPercent < EffektiveGrenze` und ohne erreichten Limitstatus hebt den Block auf.
+9. Der unterbrochene Auftrag hat Vorrang und wird mit demselben Plattformprofil in derselben Plattform-Sitzung fortgesetzt, sofern eine Sitzungs-ID und Resume-Unterstützung vorhanden sind.
 10. Der Projekt-Hold wird erst nach erfolgreichem Abschluss, ausdrücklichem Abbruch oder manueller Freigabe aufgehoben. Ist keine sichere Fortsetzung möglich, wechselt der Auftrag zu `MenschlichePruefung` und der Projekt-Hold bleibt bestehen.
 
 ## 9. Git-Verhalten
@@ -263,10 +294,12 @@ Bei `UsageExceeded` gelten atomar folgende Regeln:
 
 Hauptbereiche:
 
-- Warteschlange mit Priorität, Plattform, Modell, Effort, Projekt, Usage und Status
+- Warteschlange mit Priorität, Plattform, Profil, Modell, Effort, Projekt, Usage und Status
 - Auftragseditor mit Auto-Commit-Option
 - Live-Ansicht für stdout, stderr und Ereignisse
-- Plattformübersicht mit Zustand, aktuellem Verbrauch und Reset
+- Plattformübersicht mit Zustand und zusammengefasster Usage des Standardprofils
+- Profilverwaltung im Plattformdialog mit Hinzufügen, Bearbeiten, Deaktivieren und profilbezogener Usage-Prüfung
+- Statusleiste mit allen Profilen, für die `ShowUsageInStatusBar` aktiviert ist
 - sichtbare Plattform- und Projektsperren mit Ursache, auslösendem Auftrag und möglicher Freigabezeit
 - Projektroot-Dialog und Assistent für neue Projekte
 - Usage-Regel-Editor einschließlich Endspurt
@@ -281,7 +314,8 @@ Beim Schließen über das Fensterkreuz wird standardmäßig in den Tray minimier
 
 - Keine Administratorrechte und kein Windows-Dienst in Version 1.
 - Keine frei zusammengesetzten Shell-Kommandos; ausführbare Datei und Argumente werden separat gespeichert.
-- Geheimnisse nicht im Klartext in SQLite speichern. Vorhandene CLI-Anmeldungen werden bevorzugt wiederverwendet.
+- Geheimnisse nicht im Klartext in SQLite speichern. Gespeichert werden nur Profilname und Konfigurationsordner; vorhandene CLI-Anmeldungen werden im jeweiligen Provider-Ordner wiederverwendet.
+- Profilordner oder Credential-Dateien niemals automatisch kopieren, öffnen oder löschen.
 - Logs dürfen keine Tokens oder Authentifizierungsheader enthalten.
 - Abbruch beendet den gesamten gestarteten Prozessbaum.
 - Pro Auftrag gelten Timeout, maximale Versuche und Wiederholungsverzögerung.
@@ -295,6 +329,7 @@ Beim Schließen über das Fensterkreuz wird standardmäßig in den Tray minimier
 - automatische fachliche Bewertung durch eine zweite KI
 - eigene Chat-Oberfläche für Rückfragen
 - mehrere parallele Aufträge derselben Plattform
+- automatische Profilwahl, automatischer Fallback auf ein anderes Profil oder profilbezogene Parallelität
 - automatische Feature-Branches oder Worktrees
 - verteilte Verarbeitung auf mehreren Rechnern
 
@@ -315,6 +350,12 @@ Beim Schließen über das Fensterkreuz wird standardmäßig in den Tray minimier
 | `010_AP10.md` | WinForms-Oberfläche und Tray | AP2, AP6–AP9 | GPT-5.6 Sol, medium |
 | `011_AP11.md` | Wiederanlauf und menschliche Prüfung | AP6–AP10 | GPT-5.6 Sol, high |
 | `012_AP12.md` | End-to-End-Tests und Veröffentlichung | alle | GPT-5.6 Sol, high |
+| `013_AP13.md` | Plattformprofil-Domäne und SQLite-Migration | AP12 | GPT-5.6 Sol, high |
+| `014_AP14.md` | Codex-Profile und profilbezogener App Server | AP13 | GPT-5.6 Sol, high |
+| `015_AP15.md` | Claude-Profile und profilbezogene Usage | AP13 | Claude Sonnet, high |
+| `016_AP16.md` | Profilbezogene Scheduler-, Usage- und Sperrlogik | AP14, AP15 | GPT-5.6 Sol, high |
+| `017_AP17.md` | Profilverwaltung und Profilauswahl in WinForms | AP13, AP16 | Claude Sonnet, medium |
+| `018_AP18.md` | Profil-End-to-End-Tests und Dokumentation | AP14–AP17 | GPT-5.6 Sol, high |
 
 `medium` ist der Standard für klar abgegrenzte Implementierungsarbeit. `high` wird nur dort eingesetzt, wo Nebenläufigkeit, Prozesslebenszyklus, Protokollintegration, Wiederanlauf oder irreversible Git-Aktionen zusätzliche Fehlermöglichkeiten erzeugen. `xhigh` oder `max` sind für die geplanten Pakete nicht erforderlich. Falls ein High-Paket Usage sparen muss, darf es zunächst mit medium versucht werden; bei nicht bestandenen Abnahmekriterien wird dieselbe Session mit high fortgesetzt, statt ein neues Paket zu beginnen.
 
@@ -338,3 +379,6 @@ Verbindliche Reihenfolge:
 - Codex `exec`, stdin, JSONL und Sitzungsfortsetzung: https://learn.chatgpt.com/docs/developer-commands?surface=cli
 - Codex App Server mit `account/rateLimits/read`, Mehrfach-Buckets, Resetzeit und Limitstatus: https://learn.chatgpt.com/docs/app-server
 - Codex Analytics API nur als aggregierte Workspace-Auswertung, nicht als Scheduler-Rate-Limit-Quelle: https://learn.chatgpt.com/de-DE/docs/enterprise/analytics-api
+- Codex `CODEX_HOME`, `CODEX_SQLITE_HOME` und Standardpfad: https://learn.chatgpt.com/docs/config-file/environment-variables
+- Codex Credential-Store und `auth.json`: https://learn.chatgpt.com/de-DE/docs/auth
+- Claude `CLAUDE_CONFIG_DIR` für getrennte Konfiguration, Anmeldung und Historie: https://code.claude.com/docs/en/env-vars

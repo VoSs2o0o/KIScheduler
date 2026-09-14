@@ -1,23 +1,39 @@
+using System.Collections.Concurrent;
+using System.Text.Json;
 using KIScheduler.Core.Contracts;
 using KIScheduler.Core.Domain;
 using Microsoft.Extensions.Options;
-using System.Text.Json;
 
 namespace KIScheduler.Platforms.Codex;
 
 public sealed class CodexUsageProvider : IUsageProvider, IDisposable
 {
     private const string Source = "codex-app-server/account/rateLimits/read";
-    private readonly ICodexAppServerClient client;
+    private readonly ICodexAppServerClientFactory? clientFactory;
+    private readonly ICodexProfileResolver? profileResolver;
+    private readonly ICodexAppServerClient? directClient;
     private readonly IClock clock;
     private readonly CodexOptions options;
-    private readonly SemaphoreSlim refreshGate = new(1, 1);
-    private UsageReadResult current = UsageReadResult.Unknown("Codex-Usage wurde noch nicht gelesen.");
+    private readonly ConcurrentDictionary<PlatformProfileId, UsageReadResult> current = new();
+    private readonly ConcurrentDictionary<PlatformProfileId, SemaphoreSlim> refreshGates = new();
+    private readonly Dictionary<PlatformProfileId, ICodexAppServerClient> subscriptions = [];
+    private readonly object subscriptionsGate = new();
+    private UsageReadResult legacyCurrent = UsageReadResult.Unknown("Codex-Usage wurde noch nicht gelesen.");
     private bool disposed;
+
+    public CodexUsageProvider(ICodexAppServerClientFactory clientFactory, ICodexProfileResolver profileResolver,
+        IClock clock, IOptions<CodexOptions> options)
+    {
+        this.clientFactory = clientFactory ?? throw new ArgumentNullException(nameof(clientFactory));
+        this.profileResolver = profileResolver ?? throw new ArgumentNullException(nameof(profileResolver));
+        this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
+        this.options = options?.Value ?? throw new ArgumentNullException(nameof(options));
+        this.options.Validate();
+    }
 
     public CodexUsageProvider(ICodexAppServerClient client, IClock clock, IOptions<CodexOptions> options)
     {
-        this.client = client ?? throw new ArgumentNullException(nameof(client));
+        directClient = client ?? throw new ArgumentNullException(nameof(client));
         this.clock = clock ?? throw new ArgumentNullException(nameof(clock));
         this.options = options?.Value ?? throw new ArgumentNullException(nameof(options));
         this.options.Validate();
@@ -32,37 +48,50 @@ public sealed class CodexUsageProvider : IUsageProvider, IDisposable
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
-        UsageReadResult cached = Volatile.Read(ref current);
+        if (profileResolver is null)
+            return await ReadLegacyAsync(forceRefresh, cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            PlatformProfile profile = await profileResolver.ResolveDefaultAsync(cancellationToken)
+                .ConfigureAwait(false);
+            return await ReadAsync(profile.Id, forceRefresh, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CodexProfileException exception)
+        {
+            return UsageReadResult.Unknown($"Codex-Usage unbekannt (profile): {exception.Message}");
+        }
+    }
+
+    public async Task<UsageReadResult> ReadAsync(PlatformProfileId profileId, bool forceRefresh,
+        CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        if (clientFactory is null)
+            throw new InvalidOperationException("Dieser Codex-Usage-Provider besitzt keine profilbezogene Client-Factory.");
+
+        UsageReadResult cached = current.GetOrAdd(profileId,
+            static id => UsageReadResult.Unknown("Codex-Usage wurde noch nicht gelesen.").ForProfile(id));
         if (!forceRefresh && IsFresh(cached)) return cached;
 
+        SemaphoreSlim refreshGate = refreshGates.GetOrAdd(profileId, static _ => new SemaphoreSlim(1, 1));
         await refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            cached = Volatile.Read(ref current);
+            cached = current[profileId];
             if (!forceRefresh && IsFresh(cached)) return cached;
-            try
-            {
-                CodexRateLimitsResponse response = await client.ReadRateLimitsAsync(cancellationToken)
-                    .ConfigureAwait(false);
-                UsageReadResult normalized = Normalize(response, clock.UtcNow);
-                Volatile.Write(ref current, normalized);
-                return normalized;
-            }
-            catch (CodexAppServerException exception)
-            {
-                UsageReadResult unknown = UsageReadResult.Unknown(
-                    $"Codex-Usage unbekannt ({ToReason(exception.Kind)}): {exception.Message}");
-                Volatile.Write(ref current, unknown);
-                return unknown;
-            }
-            catch (Exception exception) when (exception is JsonException or FormatException
-                or OverflowException or ArgumentOutOfRangeException)
-            {
-                UsageReadResult unknown = UsageReadResult.Unknown(
-                    $"Codex-Usage unbekannt (parse): {exception.Message}");
-                Volatile.Write(ref current, unknown);
-                return unknown;
-            }
+
+            ICodexAppServerClient client = await clientFactory.GetAsync(profileId, cancellationToken)
+                .ConfigureAwait(false);
+            Subscribe(profileId, client);
+            return await ReadCoreAsync(client, profileId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CodexProfileException exception)
+        {
+            UsageReadResult unknown = UsageReadResult.Unknown(
+                $"Codex-Usage unbekannt (profile): {exception.Message}").ForProfile(profileId);
+            current[profileId] = unknown;
+            return unknown;
         }
         finally
         {
@@ -70,7 +99,50 @@ public sealed class CodexUsageProvider : IUsageProvider, IDisposable
         }
     }
 
-    public static UsageReadResult Normalize(CodexRateLimitsResponse response, DateTimeOffset readAtUtc)
+    private async Task<UsageReadResult> ReadLegacyAsync(bool forceRefresh, CancellationToken cancellationToken)
+    {
+        UsageReadResult cached = Volatile.Read(ref legacyCurrent);
+        if (!forceRefresh && IsFresh(cached)) return cached;
+        ICodexAppServerClient client = directClient
+            ?? throw new InvalidOperationException("Kein Codex-App-Server-Client konfiguriert.");
+        UsageReadResult result = await ReadCoreAsync(client, client.PlatformProfileId, cancellationToken)
+            .ConfigureAwait(false);
+        Volatile.Write(ref legacyCurrent, result);
+        return result;
+    }
+
+    private async Task<UsageReadResult> ReadCoreAsync(ICodexAppServerClient client,
+        PlatformProfileId? profileId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            CodexRateLimitsResponse response = await client.ReadRateLimitsAsync(cancellationToken)
+                .ConfigureAwait(false);
+            UsageReadResult normalized = Normalize(response, clock.UtcNow, profileId);
+            Store(profileId, normalized);
+            return normalized;
+        }
+        catch (CodexAppServerException exception)
+        {
+            UsageReadResult unknown = UsageReadResult.Unknown(
+                $"Codex-Usage unbekannt ({ToReason(exception.Kind)}): {exception.Message}");
+            if (profileId.HasValue) unknown = unknown.ForProfile(profileId.Value);
+            Store(profileId, unknown);
+            return unknown;
+        }
+        catch (Exception exception) when (exception is JsonException or FormatException
+            or OverflowException or ArgumentOutOfRangeException)
+        {
+            UsageReadResult unknown = UsageReadResult.Unknown(
+                $"Codex-Usage unbekannt (parse): {exception.Message}");
+            if (profileId.HasValue) unknown = unknown.ForProfile(profileId.Value);
+            Store(profileId, unknown);
+            return unknown;
+        }
+    }
+
+    public static UsageReadResult Normalize(CodexRateLimitsResponse response, DateTimeOffset readAtUtc,
+        PlatformProfileId? profileId = null)
     {
         ArgumentNullException.ThrowIfNull(response);
         readAtUtc = readAtUtc.ToUniversalTime();
@@ -91,14 +163,19 @@ public sealed class CodexUsageProvider : IUsageProvider, IDisposable
             AddWindow(bucket.Secondary, "secondary", limitId, bucket);
         }
 
+        UsageReadResult result;
         if (windows.Count == 0)
-            return UsageReadResult.Unknown(missing.Count == 0
+            result = UsageReadResult.Unknown(missing.Count == 0
                 ? "Codex-Rate-Limit-Antwort enthält keine Usage-Fenster."
                 : $"Codex-Rate-Limit-Antwort enthält keine nutzbaren Fenster; fehlt: {string.Join(", ", missing)}.");
-
-        var snapshot = new UsageSnapshot(CodexPlatform.Id, readAtUtc, Source, UsageQuality.Aktuell, windows);
-        return new UsageReadResult(UsageReadStatus.Available, snapshot,
-            missing.Count == 0 ? null : $"Fehlende Codex-Usage-Felder: {string.Join(", ", missing)}.");
+        else
+        {
+            var snapshot = new UsageSnapshot(CodexPlatform.Id, readAtUtc, Source, UsageQuality.Aktuell, windows);
+            result = new UsageReadResult(UsageReadStatus.Available, snapshot,
+                missing.Count == 0 ? null : $"Fehlende Codex-Usage-Felder: {string.Join(", ", missing)}.",
+                profileId);
+        }
+        return profileId.HasValue && !result.PlatformProfileId.HasValue ? result.ForProfile(profileId.Value) : result;
 
         void AddWindow(CodexRateLimitWindow? value, string kind, string limitId, CodexRateLimitBucket bucket)
         {
@@ -133,20 +210,42 @@ public sealed class CodexUsageProvider : IUsageProvider, IDisposable
     private bool IsFresh(UsageReadResult result) => result.Snapshot is { } snapshot
         && clock.UtcNow - snapshot.ReadAtUtc <= options.UsageCacheDuration;
 
+    private void Subscribe(PlatformProfileId profileId, ICodexAppServerClient client)
+    {
+        lock (subscriptionsGate)
+        {
+            if (subscriptions.TryGetValue(profileId, out ICodexAppServerClient? previous))
+            {
+                if (ReferenceEquals(previous, client)) return;
+                previous.RateLimitsChanged -= OnRateLimitsChanged;
+            }
+            client.RateLimitsChanged += OnRateLimitsChanged;
+            subscriptions[profileId] = client;
+        }
+    }
+
     private void OnRateLimitsChanged(object? sender, CodexRateLimitsChangedEventArgs args)
     {
+        PlatformProfileId? profileId = args.PlatformProfileId ?? (sender as ICodexAppServerClient)?.PlatformProfileId;
         UsageReadResult result;
         try
         {
-            result = Normalize(args.RateLimits, clock.UtcNow);
+            result = Normalize(args.RateLimits, clock.UtcNow, profileId);
         }
         catch (Exception exception) when (exception is FormatException or OverflowException
             or ArgumentOutOfRangeException)
         {
             result = UsageReadResult.Unknown($"Codex-Push-Aktualisierung ist ungültig (parse): {exception.Message}");
+            if (profileId.HasValue) result = result.ForProfile(profileId.Value);
         }
-        Volatile.Write(ref current, result);
+        Store(profileId, result);
         UsageChanged?.Invoke(this, new UsageChangedEventArgs(result));
+    }
+
+    private void Store(PlatformProfileId? profileId, UsageReadResult result)
+    {
+        if (profileId.HasValue) current[profileId.Value] = result;
+        else Volatile.Write(ref legacyCurrent, result);
     }
 
     private static string ToReason(CodexAppServerFailureKind kind) => kind switch
@@ -161,7 +260,13 @@ public sealed class CodexUsageProvider : IUsageProvider, IDisposable
     {
         if (disposed) return;
         disposed = true;
-        client.RateLimitsChanged -= OnRateLimitsChanged;
-        refreshGate.Dispose();
+        if (directClient is not null) directClient.RateLimitsChanged -= OnRateLimitsChanged;
+        lock (subscriptionsGate)
+        {
+            foreach (ICodexAppServerClient client in subscriptions.Values)
+                client.RateLimitsChanged -= OnRateLimitsChanged;
+            subscriptions.Clear();
+        }
+        foreach (SemaphoreSlim refreshGate in refreshGates.Values) refreshGate.Dispose();
     }
 }

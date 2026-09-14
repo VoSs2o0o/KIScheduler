@@ -48,7 +48,7 @@ public sealed class UsageAndHoldTests
     public void UsageExceededIsDistinctAndDoesNotConsumeRetry()
     {
         var attempt = new ExecutionAttempt(ExecutionAttemptId.New(), WorkItemId.New(), 1,
-            new PlatformId("codex"), new ModelId("model"), new EffortLevel("medium"), Now,
+            new PlatformId("codex"), PlatformProfileId.New(), new ModelId("model"), new EffortLevel("medium"), Now,
             Now.AddMinutes(2), ExecutionAttemptResult.UsageExceeded, 1, "session-1");
 
         Assert.AreEqual(ExecutionAttemptResult.UsageExceeded, attempt.Result);
