@@ -256,7 +256,8 @@ public sealed class MainForm : Form
             var usage = data.Platforms
                 .Where(x => x.Definition.Enabled)
                 .SelectMany(x => x.Profiles.Where(p => p.Profile.Enabled && p.Profile.ShowUsageInStatusBar)
-                    .Select(p => $"{x.Definition.Id.Value}/{p.Profile.DisplayName}: {UsageStatusFormatter.Format(p.Usage, DateTimeOffset.UtcNow)}"))
+                    .Select(p => $"{StatusProfileName(x.Definition.Id, p.Profile.DisplayName)}: "
+                        + UsageStatusFormatter.Format(p.Usage, DateTimeOffset.UtcNow)))
                 .ToList();
             usageState.Visible = usage.Count > 0;
             usageState.Text = string.Join("  |  ", usage);
@@ -264,6 +265,13 @@ public sealed class MainForm : Form
         }
         catch (Exception exception) { workerState.Text = $"Aktualisierung fehlgeschlagen: {exception.Message}"; }
         finally { refreshGate.Release(); }
+    }
+
+    private static string StatusProfileName(PlatformId platformId, string profileName)
+    {
+        var platformName = platformId.Value;
+        var abbreviation = platformName[..Math.Min(2, platformName.Length)].ToUpperInvariant();
+        return $"{abbreviation}:{profileName}";
     }
 
     private void ApplyQueueRows()

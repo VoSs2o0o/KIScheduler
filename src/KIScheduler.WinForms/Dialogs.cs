@@ -268,7 +268,12 @@ internal sealed class PlatformDialog : Form
         profileTools.Items.Add(ProfileButton("Anmeldung/Usage prüfen", ProfileAction.Pruefen));
         var profilePanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8) };
         profilePanel.Controls.Add(profiles); profilePanel.Controls.Add(profileTools);
+        var profileRow = form.RowCount;
         WorkItemDialog.AddRow(form, "Profile", profilePanel);
+        form.RowStyles[profileRow].SizeType = SizeType.Percent;
+        form.RowStyles[profileRow].Height = 100;
+        profilePanel.Dock = DockStyle.Fill;
+        form.GetControlFromPosition(0, profileRow)!.Anchor = AnchorStyles.Left | AnchorStyles.Top;
         Controls.Add(form); Controls.Add(WorkItemDialog.Buttons(OnAccept));
     }
 

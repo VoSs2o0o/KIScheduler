@@ -35,6 +35,24 @@ public sealed class ClaudeAdapterTests
     }
 
     [TestMethod]
+    public void DependencyInjectionCreatesUsageProviderWithProfileResolver()
+    {
+        var configuration = new ConfigurationBuilder().Build();
+        var profile = new PlatformProfile(ProfileId, ClaudePlatform.Id, "claude", "Claude",
+            Environment.CurrentDirectory);
+        var services = new ServiceCollection();
+        services.AddSingleton<IProcessRunner>(new RecordingRunner(Completed(0)));
+        services.AddSingleton<IClock>(new TestClock());
+        services.AddSingleton<IPlatformProfileRepository>(new ProfileRepository(profile));
+        services.AddClaudePlatform(configuration);
+
+        using ServiceProvider provider = services.BuildServiceProvider();
+        ClaudeUsageProvider usageProvider = provider.GetRequiredService<ClaudeUsageProvider>();
+
+        Assert.AreSame(usageProvider, provider.GetRequiredService<IUsageProvider>());
+    }
+
+    [TestMethod]
     public async Task PlatformUsesNonInteractiveStructuredOutputStdinModelEffortAndResume()
     {
         var runner = new RecordingRunner(Completed(0,

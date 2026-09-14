@@ -3,6 +3,7 @@ using KIScheduler.Platforms.Claude;
 using KIScheduler.Platforms.Codex;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace KIScheduler.Platforms;
 
@@ -80,7 +81,13 @@ public static class PlatformServiceCollectionExtensions
         services.AddSingleton<IClaudeProfileResolver, ClaudeProfileResolver>();
         services.AddSingleton<CommandRegexReader>();
         services.AddAiPlatform<ClaudePlatform>();
-        services.AddUsageProvider<ClaudeUsageProvider>();
+        services.AddSingleton<ClaudeUsageProvider>(provider => new ClaudeUsageProvider(
+            provider.GetRequiredService<CommandRegexReader>(),
+            provider.GetRequiredService<IClaudeProfileResolver>(),
+            provider.GetRequiredService<IClock>(),
+            provider.GetRequiredService<IOptions<ClaudeOptions>>(),
+            provider.GetService<IPlatformRepository>()));
+        services.AddSingleton<IUsageProvider>(provider => provider.GetRequiredService<ClaudeUsageProvider>());
         return services;
     }
 }
