@@ -91,6 +91,7 @@ public sealed class MainForm : Form
     {
         queue.Columns.AddRange(
             TextColumn("Priorität", "Priority", 75), TextColumn("Plattform", "Platform", 85),
+            TextColumn("Profil", "Profile", 150),
             TextColumn("Modell", "Model", 135), TextColumn("Effort", "Effort", 70),
             TextColumn("Projekt", "Project", 150), TextColumn("Usage", "Usage", 190),
             TextColumn("Status", "Status", 150), TextColumn("Titel", "Title", 230),
@@ -132,12 +133,13 @@ public sealed class MainForm : Form
     private TabPage BuildPlatformPage()
     {
         platformGrid.Columns.AddRange(TextColumn("Plattform", "Platform", 110), TextColumn("Aktiv", "Enabled", 65),
-            TextColumn("Statusleiste", "StatusBar", 85), TextColumn("Zustand", "Health", 130),
+            TextColumn("Standardprofil", "DefaultProfile", 150), TextColumn("Profile", "Profiles", 75),
+            TextColumn("Zustand", "Health", 130),
             TextColumn("Details", "Details", 260), TextColumn("Verbrauch und Reset", "Usage", 430),
             TextColumn("Wirksame Grenzwerte", "Limits", 400));
         var tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
         tools.Items.Add(Button("Jetzt prüfen", async () => await RefreshAsync(true)));
-        tools.Items.Add(Button("Plattform bearbeiten", async () => await EditPlatformAsync()));
+        tools.Items.Add(Button("Plattform und Profile verwalten", async () => await EditPlatformAsync()));
         return Page("Plattformen & Usage", platformGrid, tools);
     }
 
@@ -164,10 +166,10 @@ public sealed class MainForm : Form
 
     private TabPage BuildHistoryPage()
     {
-        attemptsGrid.Columns.AddRange(TextColumn("Nr.", "Number", 50), TextColumn("Start", "Start", 145),
+        attemptsGrid.Columns.AddRange(TextColumn("Nr.", "Number", 50), TextColumn("Profil", "Profile", 145), TextColumn("Start", "Start", 145),
             TextColumn("Ende", "End", 145), TextColumn("Ergebnis", "Result", 170), TextColumn("Exit", "Exit", 55),
             TextColumn("Sitzung", "Session", 240), TextColumn("Diagnose", "Diagnostic", 430));
-        eventsGrid.Columns.AddRange(TextColumn("Zeit", "Time", 145), TextColumn("Stufe", "Severity", 90),
+        eventsGrid.Columns.AddRange(TextColumn("Zeit", "Time", 145), TextColumn("Profil", "Profile", 145), TextColumn("Stufe", "Severity", 90),
             TextColumn("Typ/Stream", "Type", 200), TextColumn("Meldung", "Message", 700));
         var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 220 };
         split.Panel1.Controls.Add(attemptsGrid); split.Panel2.Controls.Add(eventsGrid);
@@ -252,8 +254,9 @@ public sealed class MainForm : Form
             ApplyQueueRows(); ApplyProjectRows(); ApplyPlatformRows(); ApplyBlockRows(); ApplyPolicyRows();
             UpdateSchedulerPauseUi();
             var usage = data.Platforms
-                .Where(x => x.Definition.Enabled && x.Definition.ShowUsageInStatusBar)
-                .Select(x => $"{x.Definition.Id.Value}: {UsageStatusFormatter.Format(x.Usage, DateTimeOffset.UtcNow)}")
+                .Where(x => x.Definition.Enabled)
+                .SelectMany(x => x.Profiles.Where(p => p.Profile.Enabled && p.Profile.ShowUsageInStatusBar)
+                    .Select(p => $"{x.Definition.Id.Value}/{p.Profile.DisplayName}: {UsageStatusFormatter.Format(p.Usage, DateTimeOffset.UtcNow)}"))
                 .ToList();
             usageState.Visible = usage.Count > 0;
             usageState.Text = string.Join("  |  ", usage);
@@ -277,7 +280,7 @@ public sealed class MainForm : Form
             foreach (var row in data.Queue.Where(x => (status is null || x.Status == status) &&
                 (term.Length == 0 || $"{x.Item.Title} {x.Project} {x.Reason}".Contains(term, StringComparison.CurrentCultureIgnoreCase))))
             {
-                var index = queue.Rows.Add(row.Item.Priority.Value, row.Item.PlatformId.Value, row.Item.ModelId.Value,
+                var index = queue.Rows.Add(row.Item.Priority.Value, row.Item.PlatformId.Value, row.Profile, row.Item.ModelId.Value,
                     row.Item.Effort.Value, row.Project, row.Usage, row.Status, row.Item.Title, row.Reason);
                 queue.Rows[index].Tag = row.Item;
                 if (row.Item.Id == selected) selectedRow = queue.Rows[index];
@@ -309,7 +312,7 @@ public sealed class MainForm : Form
             if (!string.IsNullOrWhiteSpace(row.UsageMessage)) usage += $" — {row.UsageMessage}";
             var health = row.Definition.Enabled ? row.Health.Status.ToString() : "Deaktiviert";
             var index = platformGrid.Rows.Add(row.Definition.Id.Value, row.Definition.Enabled ? "Ja" : "Nein",
-                row.Definition.ShowUsageInStatusBar ? "Ja" : "Nein", health, row.Health.Message ?? "", usage,
+                row.DefaultProfile?.DisplayName ?? "—", row.Profiles.Count, health, row.Health.Message ?? "", usage,
                 row.EffectiveLimits);
             platformGrid.Rows[index].Tag = row.Definition;
             if (row.Definition.Id.Value.Equals(selected, StringComparison.OrdinalIgnoreCase))
@@ -382,7 +385,10 @@ public sealed class MainForm : Form
             DataGridViewRow? selectedAttemptRow = null;
             foreach (var x in result.Attempts)
             {
-                var index = attemptsGrid.Rows.Add(x.SequenceNumber, x.StartedAtUtc.ToLocalTime().ToString("g"),
+                var profile = data?.Platforms.SelectMany(p => p.Profiles)
+                    .FirstOrDefault(p => p.Profile.Id == x.PlatformProfileId)?.Profile.DisplayName
+                    ?? x.PlatformProfileId.ToString();
+                var index = attemptsGrid.Rows.Add(x.SequenceNumber, profile, x.StartedAtUtc.ToLocalTime().ToString("g"),
                     x.CompletedAtUtc.ToLocalTime().ToString("g"), x.Result, x.ExitCode, x.SessionId, x.Diagnostic);
                 attemptsGrid.Rows[index].Tag = x;
                 if (x.Id == selectedAttemptId) selectedAttemptRow = attemptsGrid.Rows[index];
@@ -392,7 +398,10 @@ public sealed class MainForm : Form
                 schedulerOptions.HistoryUsageEventInterval);
             foreach (var x in visibleEvents.Reverse())
             {
-                var index = eventsGrid.Rows.Add(x.OccurredAtUtc.ToLocalTime().ToString("g"), x.Severity,
+                var profile = data?.Platforms.SelectMany(p => p.Profiles)
+                    .FirstOrDefault(p => p.Profile.Id == x.PlatformProfileId)?.Profile.DisplayName
+                    ?? x.PlatformProfileId.ToString();
+                var index = eventsGrid.Rows.Add(x.OccurredAtUtc.ToLocalTime().ToString("g"), profile, x.Severity,
                     x.EventType, x.Message);
                 eventsGrid.Rows[index].Tag = x;
                 if (x.Id == selectedEventId) selectedEventRow = eventsGrid.Rows[index];
@@ -403,7 +412,7 @@ public sealed class MainForm : Form
             currentResumeCommand = review?.ResumeCommand;
             reviewDetails.Visible = review is not null;
             reviewDetails.Text = review is null ? "" :
-                $"MENSCHLICHE PRÜFUNG\r\nPlattform/Modell: {review.Platform} / {review.Model}   Projekt: {review.Project}\r\n" +
+                $"MENSCHLICHE PRÜFUNG\r\nPlattform/Profil/Modell: {review.Platform} / {review.Profile} / {review.Model}   Projekt: {review.Project}\r\n" +
                 $"Projektroot: {review.ProjectRoot ?? "—"}\r\nSitzung: {review.SessionId ?? "—"}   Logs: {review.LogReference}\r\n" +
                 $"Fehlergrund: {review.FailureReason}\r\nFortsetzungsbefehl: {review.ResumeCommand ?? "nicht sicher verfügbar"}";
         }
@@ -419,9 +428,9 @@ public sealed class MainForm : Form
     private async Task EditWorkItemAsync(WorkItem? item, bool duplicate = false)
     {
         if (data is null) return;
-        var selectablePlatforms = data.Platforms.Select(x => x.Definition)
-            .Where(x => x.Enabled || (!duplicate && item is not null
-                && string.Equals(x.Id.Value, item.PlatformId.Value, StringComparison.OrdinalIgnoreCase))).ToList();
+        var selectablePlatforms = data.Platforms
+            .Where(x => x.Definition.Enabled || (!duplicate && item is not null
+                && string.Equals(x.Definition.Id.Value, item.PlatformId.Value, StringComparison.OrdinalIgnoreCase))).ToList();
         using var dialog = new WorkItemDialog(selectablePlatforms, item, data.Projects, duplicate);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         await UiAction(async () =>
@@ -435,7 +444,7 @@ public sealed class MainForm : Form
     private Task DuplicateSelectedAsync() => SelectedItem() is { } item
         ? EditWorkItemAsync(item, duplicate: true) : Task.CompletedTask;
     private async Task ChangePriorityAsync(int delta)
-    { var item = SelectedItem(); if (item is null || data is null || !item.CanEdit) return; var projectRoot = item.ProjectId is { } id && data.Projects.TryGetValue(id, out var p) ? p.RootPath : null; var prompt = projectRoot is null ? item.PromptPath.Value : Path.GetFullPath(item.PromptPath.Value, projectRoot); var model = new WorkItemEditModel(item.Title, Math.Clamp(item.Priority.Value + delta, 0, 100), item.PlatformId.Value, item.ModelId.Value, item.Effort.Value, prompt, item.AutoCommit, item.CommitMessage, item.ProjectId); await UiAction(async () => { await ui.SaveWorkItemAsync(model, item); await RefreshAsync(); }); }
+    { var item = SelectedItem(); if (item is null || data is null || !item.CanEdit) return; var projectRoot = item.ProjectId is { } id && data.Projects.TryGetValue(id, out var p) ? p.RootPath : null; var prompt = projectRoot is null ? item.PromptPath.Value : Path.GetFullPath(item.PromptPath.Value, projectRoot); var model = new WorkItemEditModel(item.Title, Math.Clamp(item.Priority.Value + delta, 0, 100), item.PlatformId.Value, item.ModelId.Value, item.Effort.Value, prompt, item.AutoCommit, item.CommitMessage, item.ProjectId, item.PlatformProfileId); await UiAction(async () => { await ui.SaveWorkItemAsync(model, item); await RefreshAsync(); }); }
     private async Task ToggleItemPauseAsync() { var item = SelectedItem(); if (item is null) return; await UiAction(async () => { await ui.SetPausedAsync(item, item.Status != WorkItemStatus.Pausiert); await RefreshAsync(); }); }
     private async Task CancelSelectedAsync() { var item = SelectedItem(); if (item is null || MessageBox.Show(this, $"Auftrag '{item.Title}' kontrolliert abbrechen?", "Abbrechen bestätigen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; await UiAction(async () => { if (!await ui.CancelAsync(item)) throw new InvalidOperationException("Der Auftrag kann nicht abgebrochen werden."); await RefreshAsync(); }); }
     private async Task RequeueSelectedAsync()
@@ -477,7 +486,79 @@ public sealed class MainForm : Form
 
     private async Task ReleaseSelectedHoldAsync()
     { if (blockGrid.CurrentRow?.Tag is not ProjectExecutionHold hold) { MessageBox.Show(this, "Bitte einen Projekt-Hold auswählen."); return; } if (MessageBox.Show(this, "Der Arbeitsbaum kann teilweise verändert sein. Haben Sie ihn geprüft und möchten Sie den Hold bewusst freigeben?", "Manuelle Freigabe", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; await UiAction(async () => { await ui.ReleaseHoldAsync(hold); await RefreshAsync(); }); }
-    private async Task EditPlatformAsync() { if (platformGrid.CurrentRow?.Tag is not PlatformDefinition platform) return; using var dialog = new PlatformDialog(platform); if (dialog.ShowDialog(this) != DialogResult.OK) return; await UiAction(async () => { await ui.SavePlatformAsync(dialog.Value); await RefreshAsync(true); }); }
+    private async Task EditPlatformAsync()
+    {
+        if (data is null || platformGrid.CurrentRow?.Tag is not PlatformDefinition platform) return;
+        while (true)
+        {
+            var row = data.Platforms.FirstOrDefault(x => x.Definition.Id == platform.Id);
+            if (row is null) return;
+            using var dialog = new PlatformDialog(row.Definition, row.Profiles);
+            var result = dialog.ShowDialog(this);
+            if (result == DialogResult.Cancel) return;
+            if (result == DialogResult.OK)
+            {
+                await UiAction(async () => { await ui.SavePlatformAsync(dialog.Value); await RefreshAsync(true); });
+                return;
+            }
+
+            if (dialog.RequestedAction == PlatformDialog.ProfileAction.Hinzufuegen)
+            {
+                using var profileDialog = new PlatformProfileDialog(platform.Id, null);
+                if (profileDialog.ShowDialog(this) == DialogResult.OK)
+                    await UiAction(async () => { await ui.SaveProfileAsync(profileDialog.Value); await RefreshAsync(true); });
+            }
+            else if (dialog.SelectedProfile is { } selectedProfile
+                && dialog.RequestedAction == PlatformDialog.ProfileAction.Bearbeiten)
+            {
+                using var profileDialog = new PlatformProfileDialog(platform.Id, selectedProfile);
+                if (profileDialog.ShowDialog(this) == DialogResult.OK)
+                    await UiAction(async () => { await ui.SaveProfileAsync(profileDialog.Value); await RefreshAsync(true); });
+            }
+            else if (dialog.SelectedProfile is { } profile
+                && dialog.RequestedAction == PlatformDialog.ProfileAction.Pruefen)
+            {
+                await UiAction(async () =>
+                {
+                    var result = await ui.CheckProfileAsync(profile.Id);
+                    await RefreshAsync();
+                    MessageBox.Show(this, $"Anmeldung/Usage für '{profile.DisplayName}' wurde geprüft.\r\n"
+                        + $"Health: {result.Health.Status}\r\n"
+                        + $"Usage: {(result.Usage is null ? "unbekannt" : "Snapshot vorhanden")}", "Profilprüfung",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                });
+            }
+            else if (dialog.SelectedProfile is { } profileToDisable
+                && dialog.RequestedAction == PlatformDialog.ProfileAction.Deaktivieren)
+            {
+                var impacts = await ui.GetProfileDeactivationImpactsAsync(profileToDisable);
+                if (impacts.Count > 0)
+                {
+                    MessageBox.Show(this,
+                        $"'{profileToDisable.DisplayName}' kann noch nicht deaktiviert werden.\r\n\r\n"
+                        + "Wartende/bearbeitbare Aufträge:\r\n"
+                        + string.Join("\r\n", impacts.Select(x => $"• {x.Title} ({x.Status})"))
+                        + "\r\n\r\nBitte diese Aufträge zuerst einem anderen aktiven Profil zuordnen.",
+                        "Profil wird verwendet", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    continue;
+                }
+                PlatformProfile? replacement = null;
+                if (profileToDisable.IsDefault)
+                {
+                    using var replacementDialog = new ProfileSelectionDialog(
+                        row.Profiles.Select(x => x.Profile).ToList(), "Ersatzprofil für Standard auswählen");
+                    if (replacementDialog.ShowDialog(this) != DialogResult.OK) continue;
+                    replacement = replacementDialog.Value;
+                }
+                if (MessageBox.Show(this,
+                        $"Profil '{profileToDisable.DisplayName}' deaktivieren?\r\n\r\n"
+                        + "Es werden keine Dateien und keine Anmeldedaten gelöscht. Historische Aufträge bleiben erhalten.",
+                        "Deaktivierung bestätigen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                    continue;
+                await UiAction(async () => { await ui.DisableProfileAsync(profileToDisable, replacement); await RefreshAsync(true); });
+            }
+        }
+    }
     private Task CreateProjectAsync() => EditProjectAsync(null);
     private async Task EditProjectAsync(ProjectDefinition? project)
     {

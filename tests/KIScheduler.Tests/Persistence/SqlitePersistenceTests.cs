@@ -175,6 +175,25 @@ public sealed class SqlitePersistenceTests
     }
 
     [TestMethod]
+    public async Task DisabledHistoricalDefaultDoesNotBlockSelectingReplacementDefault()
+    {
+        var repository = new SqlitePlatformProfileRepository(factory!);
+        var oldDefault = (await repository.GetDefaultAsync(new("codex")))!;
+        var replacement = new PlatformProfile(PlatformProfileId.New(), new("codex"), "codex2", "Codex 2",
+            Path.Combine(Path.GetTempPath(), $"profile-{Guid.NewGuid():N}"));
+        await repository.SaveAsync(replacement);
+
+        Assert.IsTrue(await repository.DisableAsync(oldDefault.Id));
+        await repository.SaveAsync(new PlatformProfile(replacement.Id, replacement.PlatformId,
+            PlatformProfile.DefaultName, PlatformProfile.DefaultDisplayName,
+            replacement.ConfigurationDirectory, isDefault: true));
+
+        Assert.IsFalse((await repository.GetAsync(oldDefault.Id))!.Enabled);
+        Assert.AreEqual(replacement.Id, (await repository.GetDefaultAsync(new("codex")))!.Id);
+        Assert.AreEqual(2, (await repository.ListAsync(new("codex"))).Count(x => x.IsDefault));
+    }
+
+    [TestMethod]
     public async Task WorkItemRejectsProfileFromAnotherPlatform()
     {
         var item = new WorkItem(WorkItemId.New(), "Falsches Profil", new(50), new("codex"),

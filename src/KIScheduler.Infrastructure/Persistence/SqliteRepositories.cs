@@ -222,7 +222,7 @@ public sealed class SqlitePlatformProfileRepository(
         ArgumentNullException.ThrowIfNull(platformId);
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         var rows = await db.PlatformProfiles.AsNoTracking()
-            .Where(x => x.IsDefault).ToListAsync(cancellationToken);
+            .Where(x => x.IsDefault && x.Enabled).ToListAsync(cancellationToken);
         var row = rows.SingleOrDefault(x => x.PlatformId.Equals(platformId.Value,
             StringComparison.OrdinalIgnoreCase));
         return row is null ? null : ToDomain(row);
@@ -258,16 +258,16 @@ public sealed class SqlitePlatformProfileRepository(
             .Where(x => x.Id != profile.Id.Value).ToListAsync(cancellationToken);
         siblings = siblings.Where(x => x.PlatformId.Equals(profile.PlatformId.Value,
             StringComparison.OrdinalIgnoreCase)).ToList();
-        if (siblings.Any(x => x.Name.Equals(profile.Name, StringComparison.OrdinalIgnoreCase)))
+        if (siblings.Any(x => x.Enabled && x.Name.Equals(profile.Name, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException("Profilnamen müssen innerhalb einer Plattform eindeutig sein.");
-        if (siblings.Any(x => x.DisplayName.Equals(profile.DisplayName, StringComparison.OrdinalIgnoreCase)))
+        if (siblings.Any(x => x.Enabled && x.DisplayName.Equals(profile.DisplayName, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException("Anzeigenamen müssen innerhalb einer Plattform eindeutig sein.");
         if (siblings.Any(x => x.ConfigurationDirectory.Equals(profile.ConfigurationDirectory,
                 StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException("Profilordner müssen innerhalb einer Plattform eindeutig sein.");
-        if (profile.IsDefault && siblings.Any(x => x.IsDefault))
+        if (profile.IsDefault && siblings.Any(x => x.IsDefault && x.Enabled))
             throw new InvalidOperationException("Je Plattform darf es nur ein Standardprofil geben.");
-        if (!profile.IsDefault && !siblings.Any(x => x.IsDefault))
+        if (!profile.IsDefault && !siblings.Any(x => x.IsDefault && x.Enabled))
             throw new InvalidOperationException("Je Plattform muss genau ein Standardprofil vorhanden sein.");
 
         var row = ToRow(profile);

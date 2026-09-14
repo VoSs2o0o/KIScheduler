@@ -8,12 +8,16 @@ using Microsoft.Extensions.Hosting;
 namespace KIScheduler.WinForms;
 
 public sealed record WorkItemEditModel(string Title, int Priority, string PlatformId, string ModelId,
-    string Effort, string PromptPath, bool AutoCommit, string? CommitMessage, ProjectId? ProjectId = null);
+    string Effort, string PromptPath, bool AutoCommit, string? CommitMessage, ProjectId? ProjectId = null,
+    PlatformProfileId? ProfileId = null);
 
-public sealed record QueueRow(WorkItem Item, string Project, string Usage, string Status, string Reason);
+public sealed record ProfileRow(PlatformProfile Profile, PlatformHealth Health, UsageSnapshot? Usage,
+    string? UsageMessage);
+public sealed record QueueRow(WorkItem Item, string Profile, string Project, string Usage, string Status, string Reason);
 public sealed record PlatformRow(PlatformDefinition Definition, PlatformHealth Health, UsageSnapshot? Usage,
-    string EffectiveLimits, string? UsageMessage);
-public sealed record HumanReviewDetails(string Platform, string Model, string Project, string? ProjectRoot,
+    string EffectiveLimits, string? UsageMessage, PlatformProfile? DefaultProfile,
+    IReadOnlyList<ProfileRow> Profiles);
+public sealed record HumanReviewDetails(string Platform, string Profile, string Model, string Project, string? ProjectRoot,
     string? SessionId, string FailureReason, string LogReference, string? ResumeCommand);
 public sealed record DashboardData(IReadOnlyList<QueueRow> Queue, IReadOnlyList<PlatformRow> Platforms,
     IReadOnlyList<PlatformUsageBlock> PlatformBlocks, IReadOnlyList<ProjectExecutionHold> ProjectHolds,
@@ -58,37 +62,20 @@ public sealed class SchedulerUiService(
         var profileMap = profileListTask.Result.ToDictionary(x => x.Id);
         var platformRows = await Task.WhenAll(platformListTask.Result.Select(async definition =>
         {
-            var defaultProfile = profileListTask.Result.FirstOrDefault(x => x.IsDefault
+            var configuredProfiles = profileListTask.Result.Where(x => PlatformEquals(x.PlatformId, definition.Id)).ToList();
+            var profileRows = await Task.WhenAll(configuredProfiles.Select(profile =>
+                LoadProfileAsync(definition, profile, refreshProviders, cancellationToken))).ConfigureAwait(false);
+            var defaultProfile = configuredProfiles.FirstOrDefault(x => x.IsDefault
                 && PlatformEquals(x.PlatformId, definition.Id));
-            var health = definition.Enabled && defaultProfile is { Enabled: true }
-                ? await GetHealthAsync(definition, defaultProfile, refreshProviders, cancellationToken).ConfigureAwait(false)
-                : new PlatformHealth(PlatformHealthStatus.Unavailable, "Plattform deaktiviert.");
-            UsageSnapshot? snapshot = null;
-            string? usageMessage = usageMessages.GetValueOrDefault(definition.Id.Value);
-            if (definition.Enabled && defaultProfile is { Enabled: true } && refreshProviders
-                && usageRegistry.TryGet(definition.Id, out var provider) && provider is not null)
-            {
-                try
-                {
-                    var read = await provider.ReadAsync(defaultProfile.Id, true, cancellationToken).ConfigureAwait(false);
-                    usageMessage = read.Message;
-                    usageMessages[definition.Id.Value] = usageMessage;
-                    if (read.Snapshot is not null)
-                    {
-                        snapshot = read.Snapshot;
-                        await snapshots.SaveAsync(snapshot, cancellationToken).ConfigureAwait(false);
-                    }
-                }
-                catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
-                {
-                    usageMessage = exception.Message;
-                    usageMessages[definition.Id.Value] = usageMessage;
-                }
-            }
-            if (defaultProfile is not null)
-                snapshot ??= await snapshots.GetLatestAsync(defaultProfile.Id, cancellationToken).ConfigureAwait(false);
+            var defaultRow = profileRows.FirstOrDefault(x => defaultProfile is not null && x.Profile.Id == defaultProfile.Id);
+            var health = definition.Enabled && defaultRow is { Profile.Enabled: true }
+                ? defaultRow.Health
+                : new PlatformHealth(PlatformHealthStatus.Unavailable,
+                    definition.Enabled ? "Kein aktives Standardprofil." : "Plattform deaktiviert.");
+            var snapshot = defaultRow?.Usage;
             return new PlatformRow(definition, health, snapshot, definition.Enabled
-                ? DescribeLimits(definition, policyListTask.Result, snapshot) : "Deaktiviert", usageMessage);
+                ? DescribeLimits(definition, policyListTask.Result, snapshot) : "Deaktiviert",
+                defaultRow?.UsageMessage, defaultProfile, profileRows);
         })).ConfigureAwait(false);
 
         var queue = await Task.WhenAll(itemListTask.Result.Select(async item =>
@@ -107,7 +94,8 @@ public sealed class SchedulerUiService(
                 : !PlatformEquals(profile.PlatformId, item.PlatformId) ? "Plattformprofil gehört zu einer anderen Plattform"
                 : !profile.Enabled ? "Plattformprofil deaktiviert"
                 : LatestBlockingReason(item, held, platformBlocksTask.Result, snapshot);
-            return new QueueRow(item, project, usage, item.GetDisplayStatus(held).ToString(), reason);
+            return new QueueRow(item, profile?.DisplayName ?? item.PlatformProfileId.ToString(), project, usage,
+                item.GetDisplayStatus(held).ToString(), reason);
         })).ConfigureAwait(false);
         return new DashboardData(queue, platformRows, platformBlocksTask.Result, holds,
             policyListTask.Result, projectMap);
@@ -124,11 +112,16 @@ public sealed class SchedulerUiService(
         if (!definition.Enabled && (existing is null || !PlatformEquals(definition.Id, existing.PlatformId)))
             throw new InvalidOperationException($"Plattform '{model.PlatformId}' ist deaktiviert.");
         var platformId = definition.Id;
-        var platformProfile = existing is not null && PlatformEquals(definition.Id, existing.PlatformId)
-            ? await profiles.GetAsync(existing.PlatformProfileId, cancellationToken).ConfigureAwait(false)
+        var requestedProfileId = model.ProfileId
+            ?? (existing is not null && PlatformEquals(definition.Id, existing.PlatformId)
+                ? existing.PlatformProfileId : (PlatformProfileId?)null);
+        var platformProfile = requestedProfileId is { } selectedProfileId
+            ? await profiles.GetAsync(selectedProfileId, cancellationToken).ConfigureAwait(false)
             : await profiles.GetDefaultAsync(platformId, cancellationToken).ConfigureAwait(false);
         if (platformProfile is null || !platformProfile.Enabled || !PlatformEquals(platformProfile.PlatformId, platformId))
-            throw new InvalidOperationException($"Für Plattform '{platformId.Value}' ist kein gültiges Standardprofil konfiguriert.");
+            throw new InvalidOperationException($"Für Plattform '{platformId.Value}' ist kein gültiges aktives Profil ausgewählt.");
+        if (existing is { HasExecutionStarted: true } && existing.PlatformProfileId != platformProfile.Id)
+            throw new InvalidOperationException("Das Profil eines Auftrags darf nach dem ersten Versuch nicht mehr geändert werden.");
         var modelId = new ModelId(model.ModelId);
         var effort = new EffortLevel(model.Effort);
         if (!definition.Supports(modelId, effort))
@@ -246,7 +239,8 @@ public sealed class SchedulerUiService(
             && platformRegistry.GetRequired(item.PlatformId).Capabilities.SupportsResume;
         var command = canResume ? BuildResumeCommand(item.PlatformId, latestAttempt!.SessionId!) : null;
         var project = projectTask.Result;
-        return new HumanReviewDetails(item.PlatformId.Value, item.ModelId.Value,
+        var profile = await profiles.GetAsync(item.PlatformProfileId, cancellationToken).ConfigureAwait(false);
+        return new HumanReviewDetails(item.PlatformId.Value, profile?.DisplayName ?? item.PlatformProfileId.ToString(), item.ModelId.Value,
             project?.Name ?? item.ProjectId?.ToString() ?? "—", project?.RootPath, session,
             latestFailure, $"{events.Count} Ereignis(se), {attempts.Count} Versuch/Versuche in der Historie",
             command);
@@ -276,13 +270,82 @@ public sealed class SchedulerUiService(
     public Task SavePoliciesAsync(IReadOnlyCollection<UsagePolicy> values,
         CancellationToken cancellationToken = default) => policies.ReplaceAsync(values, cancellationToken);
 
+    public Task<IReadOnlyList<WorkItem>> GetProfileDeactivationImpactsAsync(PlatformProfile profile,
+        CancellationToken cancellationToken = default) =>
+        GetProfileDeactivationImpactsCoreAsync(profile, cancellationToken);
+
+    public async Task<ProfileRow> CheckProfileAsync(PlatformProfileId profileId,
+        CancellationToken cancellationToken = default)
+    {
+        var profile = await profiles.GetAsync(profileId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("Das Profil wurde nicht gefunden.");
+        var platform = await platforms.GetAsync(profile.PlatformId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Plattform '{profile.PlatformId.Value}' wurde nicht gefunden.");
+        return await LoadProfileAsync(platform, profile, true, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task SaveProfileAsync(PlatformProfile profile,
+        CancellationToken cancellationToken = default)
+    {
+        var platform = await platforms.GetAsync(profile.PlatformId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Plattform '{profile.PlatformId.Value}' wurde nicht gefunden.");
+        if (!platform.Enabled && profile.Enabled)
+            throw new InvalidOperationException("Ein Profil einer deaktivierten Plattform kann nicht aktiviert werden.");
+
+        var currentDefault = await profiles.GetDefaultAsync(profile.PlatformId, cancellationToken).ConfigureAwait(false);
+        if (!profile.IsDefault || currentDefault is null || currentDefault.Id == profile.Id)
+        {
+            await profiles.SaveAsync(profile, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        // Die Repository-Regeln verhindern zwei Standards. Zuerst wird der
+        // Ersatz als normales Profil gespeichert, dann der alte Standard
+        // deaktiviert und anschließend der Ersatz zum Standard gemacht.
+        var existing = await profiles.GetAsync(profile.Id, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("Ein neues Profil kann nicht direkt zum Standardprofil gemacht werden.");
+        if (existing.IsDefault)
+            throw new InvalidOperationException("Das ausgewählte Ersatzprofil ist bereits als Standardprofil markiert.");
+        var ordinary = new PlatformProfile(profile.Id, profile.PlatformId, existing.Name,
+            existing.DisplayName, profile.ConfigurationDirectory, profile.Enabled, isDefault: false,
+            profile.ShowUsageInStatusBar);
+        await profiles.SaveAsync(ordinary, cancellationToken).ConfigureAwait(false);
+        await profiles.DisableAsync(currentDefault.Id, cancellationToken).ConfigureAwait(false);
+        await profiles.SaveAsync(profile, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task DisableProfileAsync(PlatformProfile profile, PlatformProfile? replacement = null,
+        CancellationToken cancellationToken = default)
+    {
+        var stored = await profiles.GetAsync(profile.Id, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("Das Profil wurde nicht gefunden.");
+        if (!stored.Enabled) return;
+        var impacts = await GetProfileDeactivationImpactsCoreAsync(stored, cancellationToken).ConfigureAwait(false);
+        if (impacts.Count > 0)
+            throw new InvalidOperationException("Das Profil wird noch von wartenden oder bearbeitbaren Aufträgen verwendet: "
+                + string.Join(", ", impacts.Select(x => $"'{x.Title}'"))
+                + ". Bitte diese Aufträge zuerst einem anderen aktiven Profil zuordnen.");
+        if (stored.IsDefault)
+        {
+            if (replacement is null || replacement.Id == stored.Id || !replacement.Enabled
+                || !PlatformEquals(replacement.PlatformId, stored.PlatformId) || replacement.IsDefault)
+                throw new InvalidOperationException("Das Standardprofil kann nur nach Auswahl eines aktiven Ersatzprofils deaktiviert werden.");
+            await SaveProfileAsync(new PlatformProfile(replacement.Id, replacement.PlatformId,
+                PlatformProfile.DefaultName, PlatformProfile.DefaultDisplayName,
+                replacement.ConfigurationDirectory, true, isDefault: true,
+                replacement.ShowUsageInStatusBar), cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        await profiles.DisableAsync(stored.Id, cancellationToken).ConfigureAwait(false);
+    }
+
     public async Task SavePlatformAsync(PlatformDefinition definition, CancellationToken cancellationToken = default)
     {
         platformRegistry.GetRequired(definition.Id);
         await platforms.SaveAsync(definition, cancellationToken).ConfigureAwait(false);
         await settings.SetAsync($"{definition.Id.Value}.Executable", definition.Executable, cancellationToken)
             .ConfigureAwait(false);
-        healthCache.Remove(definition.Id.Value);
+        healthCache.Clear();
     }
 
     public Task SaveSettingAsync(string key, string value, CancellationToken cancellationToken = default) =>
@@ -327,17 +390,58 @@ public sealed class SchedulerUiService(
     public static void ValidateRegex(string pattern) => _ = new Regex(pattern,
         RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
 
+    private async Task<ProfileRow> LoadProfileAsync(PlatformDefinition definition, PlatformProfile profile, bool force,
+        CancellationToken cancellationToken)
+    {
+        var health = definition.Enabled && profile.Enabled
+            ? await GetHealthAsync(definition, profile, force, cancellationToken).ConfigureAwait(false)
+            : new PlatformHealth(PlatformHealthStatus.Unavailable,
+                definition.Enabled ? "Profil deaktiviert." : "Plattform deaktiviert.");
+        UsageSnapshot? snapshot = await snapshots.GetLatestAsync(profile.Id, cancellationToken).ConfigureAwait(false);
+        string? usageMessage = usageMessages.GetValueOrDefault(profile.Id.ToString());
+        if (definition.Enabled && profile.Enabled && force
+            && usageRegistry.TryGet(definition.Id, out var provider) && provider is not null)
+        {
+            try
+            {
+                var read = await provider.ReadAsync(profile.Id, true, cancellationToken).ConfigureAwait(false);
+                usageMessage = read.Message;
+                usageMessages[profile.Id.ToString()] = usageMessage;
+                if (read.Snapshot is not null)
+                {
+                    snapshot = read.Snapshot;
+                    await snapshots.SaveAsync(snapshot, cancellationToken).ConfigureAwait(false);
+                }
+            }
+            catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                usageMessage = exception.Message;
+                usageMessages[profile.Id.ToString()] = usageMessage;
+            }
+        }
+        return new ProfileRow(profile, health, snapshot, usageMessage);
+    }
+
     private async Task<PlatformHealth> GetHealthAsync(PlatformDefinition definition, PlatformProfile profile, bool force,
         CancellationToken cancellationToken)
     {
-        if (!force && healthCache.TryGetValue(definition.Id.Value, out var cached)
+        var cacheKey = profile.Id.ToString();
+        if (!force && healthCache.TryGetValue(cacheKey, out var cached)
             && clock.UtcNow - cached.At < TimeSpan.FromSeconds(30)) return cached.Health;
         PlatformHealth health;
         try { health = await platformRegistry.GetRequired(definition.Id).CheckAvailabilityAsync(profile.Id, cancellationToken).ConfigureAwait(false); }
         catch (Exception exception) when (!cancellationToken.IsCancellationRequested)
         { health = new PlatformHealth(PlatformHealthStatus.Unavailable, exception.Message); }
-        healthCache[definition.Id.Value] = (clock.UtcNow, health);
+        healthCache[cacheKey] = (clock.UtcNow, health);
         return health;
+    }
+
+    private async Task<IReadOnlyList<WorkItem>> GetProfileDeactivationImpactsCoreAsync(PlatformProfile profile,
+        CancellationToken cancellationToken)
+    {
+        var items = await workItems.ListByStatusAsync(Enum.GetValues<WorkItemStatus>(), cancellationToken)
+            .ConfigureAwait(false);
+        return items.Where(x => x.PlatformProfileId == profile.Id && x.CanEdit).ToList();
     }
 
     private string DescribeLimits(PlatformDefinition definition, IReadOnlyList<UsagePolicy> configured,

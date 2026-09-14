@@ -53,6 +53,27 @@ beispielsweise `KISCHEDULER_Runtime__DataDirectory`; Kommandozeilenwerte haben d
 Bei Auto-Commit muss das Repository vor dem Start sauber sein. KIScheduler wechselt weder Branch noch
 Worktree automatisch und erzeugt keinen leeren Commit.
 
+## Plattformprofile
+
+Über **Plattformen & Usage** und **Plattform und Profile verwalten** lassen sich mehrere getrennte
+Profile je Plattform anlegen. Ein Profil besteht aus einem Anzeigenamen und einem vorhandenen oder
+neu anzulegenden Konfigurationsordner, zum Beispiel `C:\Users\<Benutzer>\.codex2`. Der Ordner wird
+von KIScheduler nicht angelegt, gelöscht oder verändert; dort liegen ausschließlich die von der
+jeweiligen CLI verwaltete Anmeldung und Konfiguration.
+
+Beim Anlegen eines Auftrags wird das Profil nach der Plattform und vor Modell und Effort fest gewählt.
+Nur aktive Profile sind auswählbar. Beim Bearbeiten oder Duplizieren bleibt die bisherige
+Profilzuordnung erhalten, sofern das Profil noch aktiv ist. Historische Versuche zeigen ihre frühere
+Profilzuordnung auch dann weiter an, wenn das Profil später deaktiviert wurde.
+
+Usage und Health werden je Profil geprüft. Die zusammengefasste Plattformzeile verwendet ausschließlich
+das Standardprofil. Für die Statusleiste kann die Usage-Anzeige unabhängig für jedes Profil aktiviert
+werden; dieses Anzeigehäkchen verändert keine Scheduler-Entscheidung.
+
+Das Deaktivieren entfernt weder Dateien noch Anmeldedaten. Wartende oder bearbeitbare Aufträge müssen
+zuerst einem anderen aktiven Profil zugeordnet werden. Das Standardprofil kann nur deaktiviert werden,
+wenn im selben Dialog ein aktives Ersatzprofil ausgewählt wird.
+
 ## Status und typische Fehler
 
 - **WartetAufUsage:** Mindestens ein Usage-Fenster ist an seiner exklusiven Grenze, Usage ist gemäß

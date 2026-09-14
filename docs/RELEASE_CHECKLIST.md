@@ -55,6 +55,11 @@ Kosten verbrauchen.
 | 10 | Anwendung vollständig über Tray **Beenden** schließen | Worker und CLI-Prozessbaum laufen nicht weiter; erneuter Start gelingt |
 | 11 | `Runtime:DataDirectory` auf `.` setzen und aus beschreibbarem Ordner starten | DB und Logs entstehen portabel neben der Anwendung |
 | 12 | Datenordner bei beendeter Anwendung sichern, Testdaten ändern, Sicherung restaurieren | Zustand wird nach Neustart aus der Sicherung geladen |
+| 13 | Unter **Plattform und Profile verwalten** `codex2` mit `C:\Users\<Benutzer>\.codex2` anlegen | Profil erscheint aktiv mit eigenem Ordner und kann ausgewählt werden |
+| 14 | Für zwei Profile die Statusleistenanzeige aktivieren und Usage prüfen | Beide erscheinen getrennt als `Plattform/Profil`; die Scheduler-Entscheidung bleibt unverändert |
+| 15 | Plattform im Auftragsdialog wechseln | Profil wird auf die aktiven Profile der Plattform eingeschränkt, Standard ist vorausgewählt; Modell und Effort aktualisieren sich konsistent |
+| 16 | Standardprofil mit wartendem Auftrag deaktivieren | Die betroffenen Aufträge werden angezeigt und die Deaktivierung verhindert |
+| 17 | Einen nicht belegten Standard mit aktivem Ersatzprofil deaktivieren | Ersatzprofil wird Standard; Dateien, Anmeldedaten und historische Profilspalten bleiben erhalten |
 
 ## Lokaler Nachweis für AP12
 

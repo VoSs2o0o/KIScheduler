@@ -195,16 +195,19 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("PlatformId")
                         .IsUnique()
-                        .HasFilter("\"IsDefault\" = 1");
+                        .HasFilter("\"IsDefault\" = 1 AND \"Enabled\" = 1");
 
                     b.HasIndex("PlatformId", "ConfigurationDirectory")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"Enabled\" = 1");
 
                     b.HasIndex("PlatformId", "DisplayName")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"Enabled\" = 1");
 
                     b.HasIndex("PlatformId", "Name")
-                        .IsUnique();
+                        .IsUnique()
+                        .HasFilter("\"Enabled\" = 1");
 
                     b.ToTable("PlatformProfiles", null, t =>
                         {
