@@ -511,22 +511,28 @@ public sealed class SchedulerUiService(
 
 internal sealed class UiDefaultsInitializer(IPlatformRepository platforms, IPlatformProfileRepository profiles,
     IUsagePolicyRepository policies,
-    IConfiguration configuration) : IHostedService
+    IProcessRunner processRunner, IConfiguration configuration) : IHostedService
 {
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         var configured = await platforms.ListAsync(cancellationToken);
         if (!configured.Any(x => x.Id.Value.Equals("codex", StringComparison.OrdinalIgnoreCase)))
         {
+            var executable = configuration["Codex:Executable"] ?? "codex";
+            var enabled = await IsExecutableAvailableAsync(executable, "Codex", cancellationToken);
             await platforms.SaveAsync(new PlatformDefinition(new PlatformId("codex"),
-                configuration["Codex:Executable"] ?? "codex",
-                [new PlatformModel(new ModelId("gpt-5.6-sol"), [new EffortLevel("low"), new EffortLevel("medium"), new EffortLevel("high")])]), cancellationToken);
+                executable,
+                [new PlatformModel(new ModelId("gpt-5.6-sol"), [new EffortLevel("low"), new EffortLevel("medium"), new EffortLevel("high")])],
+                enabled: enabled, showUsageInStatusBar: enabled), cancellationToken);
         }
         if (!configured.Any(x => x.Id.Value.Equals("claude", StringComparison.OrdinalIgnoreCase)))
         {
+            var executable = configuration["Claude:Executable"] ?? "claude";
+            var enabled = await IsExecutableAvailableAsync(executable, "Claude", cancellationToken);
             await platforms.SaveAsync(new PlatformDefinition(new PlatformId("claude"),
-                configuration["Claude:Executable"] ?? "claude",
-                [new PlatformModel(new ModelId("sonnet"), [new EffortLevel("low"), new EffortLevel("medium"), new EffortLevel("high")])]), cancellationToken);
+                executable,
+                [new PlatformModel(new ModelId("sonnet"), [new EffortLevel("low"), new EffortLevel("medium"), new EffortLevel("high")])],
+                enabled: enabled, showUsageInStatusBar: enabled), cancellationToken);
         }
         configured = await platforms.ListAsync(cancellationToken);
         foreach (var platform in configured)
@@ -548,4 +554,17 @@ internal sealed class UiDefaultsInitializer(IPlatformRepository platforms, IPlat
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    private async Task<bool> IsExecutableAvailableAsync(string executable, string configurationSection,
+        CancellationToken cancellationToken)
+    {
+        var timeout = configuration.GetValue($"{configurationSection}:AvailabilityTimeout",
+            TimeSpan.FromSeconds(10));
+        var result = await processRunner.RunAsync(new ProcessRunRequest(executable)
+        {
+            Arguments = ["--version"],
+            Timeout = timeout
+        }, cancellationToken);
+        return result.TerminationReason != ProcessTerminationReason.StartFailed;
+    }
 }
