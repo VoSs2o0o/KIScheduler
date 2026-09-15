@@ -176,6 +176,67 @@ public sealed class ClaudeAdapterTests
     }
 
     [TestMethod]
+    public void SubscriptionOutputProvidesSessionWeekResetsAndTotalCost()
+    {
+        const string sample = "You are currently using your subscription to power your Claude Code usage\r\n"
+            + "Current session: 100% used · resets Sep 15, 11:49am (Europe/Berlin)\r\n"
+            + "Current week (all models): 76% used · resets Sep 17, 8:59am (Europe/Berlin)\r\n"
+            + "Total cost:            $0.0000···························";
+
+        var result = Provider().TestSample(sample).NormalizedResult;
+
+        Assert.AreEqual(UsageReadStatus.Available, result.Status);
+        Assert.AreEqual(2, result.Snapshot!.Windows.Count);
+        Assert.AreEqual(100m, result.Snapshot.Windows[0].UsedPercent.Value);
+        Assert.AreEqual(new DateTimeOffset(2026, 9, 15, 9, 49, 0, TimeSpan.Zero),
+            result.Snapshot.Windows[0].ResetAtUtc);
+        Assert.AreEqual(76m, result.Snapshot.Windows[1].UsedPercent.Value);
+        Assert.AreEqual(new DateTimeOffset(2026, 9, 17, 6, 59, 0, TimeSpan.Zero),
+            result.Snapshot.Windows[1].ResetAtUtc);
+        Assert.AreEqual(TimeSpan.FromDays(7), result.Snapshot.Windows[1].WindowDuration);
+        StringAssert.Contains(result.Message!, "Total cost: $0.0000");
+    }
+
+    [TestMethod]
+    public void OlderSavedSessionRegexStillGetsSubscriptionReset()
+    {
+        var usage = new ClaudeUsageOptions
+        {
+            Pattern = @"Current session:\s*(?<used>\d+)%\s*used"
+        };
+        var result = Provider(usage).TestSample(
+            "Current session: 30% used · resets Sep 15, 11:49am (Europe/Berlin)")
+            .NormalizedResult;
+
+        Assert.AreEqual(new DateTimeOffset(2026, 9, 15, 9, 49, 0, TimeSpan.Zero),
+            result.Snapshot!.Windows.Single().ResetAtUtc);
+    }
+
+    [TestMethod]
+    public void FreeAccountOutputUsesFullUsageAndShowsCost()
+    {
+        const string sample = "You are currently using a free plan\r\nTotal cost: $0.0000";
+
+        var result = Provider().TestSample(sample).NormalizedResult;
+
+        Assert.AreEqual(UsageReadStatus.Available, result.Status);
+        Assert.AreEqual(100m, result.Snapshot!.Windows.Single().UsedPercent.Value);
+        StringAssert.Contains(result.Message!, "Free account: usage assumed at 100%.");
+        StringAssert.Contains(result.Message!, "Total cost: $0.0000");
+    }
+
+    [TestMethod]
+    public void CostOnlyOutputDoesNotInventAFreeAccount()
+    {
+        var result = Provider().TestSample("Usage currently unavailable\r\nTotal cost: $0.0000")
+            .NormalizedResult;
+
+        Assert.AreEqual(UsageReadStatus.Unknown, result.Status);
+        Assert.IsNull(result.Snapshot);
+        StringAssert.Contains(result.Message!, "Total cost: $0.0000");
+    }
+
+    [TestMethod]
     public void OutOfRangeAndNoMatchAreUnknownInsteadOfZero()
     {
         ClaudeUsageProvider provider = Provider();

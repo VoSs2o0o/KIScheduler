@@ -61,15 +61,19 @@ public sealed class UsageAndHoldTests
         Assert.AreEqual(string.Empty, ProfileUsageStatusFormatter.Format([], Now));
         Assert.AreEqual("codex/Standard: 12%", ProfileUsageStatusFormatter.Format(
             [new(new("codex"), "Standard", codexUsage, true, true, true)], Now));
-        Assert.AreEqual("codex/Standard: 12%  |  claude/claude2: 34%",
+        Assert.AreEqual("codex/Standard: 12%  |  claude/claude2: Total cost: $0.0000",
             ProfileUsageStatusFormatter.Format(
             [
                 new(new("codex"), "Standard", codexUsage, true, true, true),
                 new(new("codex"), "ausgeblendet", codexUsage, true, true, false),
                 new(new("claude"), "deaktiviert", claudeUsage, true, false, true),
                 new(new("claude"), "Plattform aus", claudeUsage, false, true, true),
-                new(new("claude"), "claude2", claudeUsage, true, true, true)
+                new(new("claude"), "claude2", claudeUsage, true, true, true,
+                    "Free account: usage assumed at 100%. | Total cost: $0.0000")
             ], Now));
+        Assert.AreEqual("claude/Standard: Total cost: unbekannt",
+            ProfileUsageStatusFormatter.Format(
+                [new(new("claude"), "Standard", claudeUsage, true, true, true)], Now));
     }
 
     [TestMethod]

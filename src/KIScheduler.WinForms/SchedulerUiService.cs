@@ -522,7 +522,9 @@ internal sealed class UiDefaultsInitializer(IPlatformRepository platforms, IPlat
             var enabled = await IsExecutableAvailableAsync(executable, "Codex", cancellationToken);
             await platforms.SaveAsync(new PlatformDefinition(new PlatformId("codex"),
                 executable,
-                [new PlatformModel(new ModelId("gpt-5.6-sol"), [new EffortLevel("low"), new EffortLevel("medium"), new EffortLevel("high")])],
+                DefaultModels(
+                    "astra", "sol", "terra", "luna",
+                    "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"),
                 enabled: enabled, showUsageInStatusBar: enabled), cancellationToken);
         }
         if (!configured.Any(x => x.Id.Value.Equals("claude", StringComparison.OrdinalIgnoreCase)))
@@ -531,7 +533,10 @@ internal sealed class UiDefaultsInitializer(IPlatformRepository platforms, IPlat
             var enabled = await IsExecutableAvailableAsync(executable, "Claude", cancellationToken);
             await platforms.SaveAsync(new PlatformDefinition(new PlatformId("claude"),
                 executable,
-                [new PlatformModel(new ModelId("sonnet"), [new EffortLevel("low"), new EffortLevel("medium"), new EffortLevel("high")])],
+                DefaultModels(
+                    "fable", "opus", "sonnet",
+                    "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5",
+                    "claude-fable-5-1[1m]", "claude-opus-5[1m]", "claude-sonnet-5[1m]"),
                 enabled: enabled, showUsageInStatusBar: enabled), cancellationToken);
         }
         configured = await platforms.ListAsync(cancellationToken);
@@ -554,6 +559,12 @@ internal sealed class UiDefaultsInitializer(IPlatformRepository platforms, IPlat
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    private static IReadOnlyList<PlatformModel> DefaultModels(params string[] modelIds)
+    {
+        var efforts = new[] { new EffortLevel("low"), new EffortLevel("medium"), new EffortLevel("high") };
+        return modelIds.Select(modelId => new PlatformModel(new ModelId(modelId), efforts)).ToList();
+    }
 
     private async Task<bool> IsExecutableAvailableAsync(string executable, string configurationSection,
         CancellationToken cancellationToken)

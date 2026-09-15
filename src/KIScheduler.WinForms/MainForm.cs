@@ -1,5 +1,7 @@
 using KIScheduler.Core.Domain;
 using KIScheduler.Core.Scheduling;
+using KIScheduler.Platforms.Claude;
+using Microsoft.Extensions.Configuration;
 
 namespace KIScheduler.WinForms;
 
@@ -8,6 +10,7 @@ public sealed class MainForm : Form
     private readonly SchedulerUiService ui;
     private readonly ISchedulerEngine scheduler;
     private readonly SchedulerOptions schedulerOptions;
+    private readonly IConfiguration configuration;
     private readonly TabControl tabs = new() { Dock = DockStyle.Fill };
     private readonly TabPage historyPage;
     private readonly DataGridView queue = Grid();
@@ -44,11 +47,13 @@ public sealed class MainForm : Form
     private bool restoringQueueSelection;
     private int historyLoadVersion;
 
-    public MainForm(SchedulerUiService ui, ISchedulerEngine scheduler, SchedulerOptions schedulerOptions)
+    public MainForm(SchedulerUiService ui, ISchedulerEngine scheduler, SchedulerOptions schedulerOptions,
+        IConfiguration configuration)
     {
         this.ui = ui;
         this.scheduler = scheduler;
         this.schedulerOptions = schedulerOptions;
+        this.configuration = configuration;
         Text = "KIScheduler";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1000, 650);
@@ -208,7 +213,14 @@ public sealed class MainForm : Form
         var retryBackoff = Field(panel, "Retry-Backoff (hh:mm:ss)", schedulerOptions.RetryBackoff.ToString("c"));
         var maximumRetryBackoff = Field(panel, "Maximaler Retry-Backoff (hh:mm:ss)",
             schedulerOptions.MaximumRetryBackoff.ToString("c"));
-        var regex = Field(panel, "Claude Usage-RegEx", @"Current session:\s*(?<used>\d+)%\s*used", 720);
+        var regex = Field(panel, "Claude Session-RegEx", configuration["Claude:Usage:Pattern"]
+            ?? ClaudeUsageOptions.DefaultPattern, 720);
+        var weeklyRegex = Field(panel, "Claude Wochen-RegEx", configuration["Claude:Usage:WeeklyPattern"]
+            ?? ClaudeUsageOptions.DefaultWeeklyPattern, 720);
+        var costRegex = Field(panel, "Claude Total-cost-RegEx", configuration["Claude:Usage:CostPattern"]
+            ?? ClaudeUsageOptions.DefaultCostPattern, 720);
+        var freeRegex = Field(panel, "Claude Free-Account-RegEx", configuration["Claude:Usage:FreeAccountPattern"]
+            ?? ClaudeUsageOptions.DefaultFreeAccountPattern, 720);
         var sample = Field(panel, "RegEx-Testausgabe", "Current session: 42% used", 720);
         var appServer = Field(panel, "Codex App-Server-Argumente (JSON)", "[\"app-server\",\"--listen\",\"stdio://\"]", 720);
         var save = new Button { Text = "Einstellungen prüfen und speichern", AutoSize = true };
@@ -225,9 +237,22 @@ public sealed class MainForm : Form
             if (!TimeSpan.TryParse(maximumRetryBackoff.Text, out var maximumBackoff) || maximumBackoff < backoff)
                 throw new InvalidOperationException("Der maximale Retry-Backoff darf nicht kleiner als der Retry-Backoff sein.");
             SchedulerUiService.ValidateRegex(regex.Text);
-            if (!System.Text.RegularExpressions.Regex.IsMatch(sample.Text, regex.Text,
-                    System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500)))
-                throw new InvalidOperationException("Der reguläre Ausdruck passt nicht auf die Testausgabe.");
+            SchedulerUiService.ValidateRegex(weeklyRegex.Text);
+            SchedulerUiService.ValidateRegex(costRegex.Text);
+            SchedulerUiService.ValidateRegex(freeRegex.Text);
+            var sessionMatch = System.Text.RegularExpressions.Regex.Match(sample.Text, regex.Text,
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
+            if (!sessionMatch.Success || !sessionMatch.Groups["used"].Success)
+                throw new InvalidOperationException("Der Session-RegEx benötigt die Gruppe 'used' und muss auf die Testausgabe passen.");
+            var weekMatch = System.Text.RegularExpressions.Regex.Match("Current week (all models): 76% used",
+                weeklyRegex.Text, System.Text.RegularExpressions.RegexOptions.CultureInvariant,
+                TimeSpan.FromMilliseconds(500));
+            if (!weekMatch.Success || !weekMatch.Groups["used"].Success)
+                throw new InvalidOperationException("Der Wochen-RegEx benötigt die Gruppe 'used'.");
+            var costMatch = System.Text.RegularExpressions.Regex.Match("Total cost: $0.0000", costRegex.Text,
+                System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
+            if (!costMatch.Success || !costMatch.Groups["cost"].Success)
+                throw new InvalidOperationException("Der Total-cost-RegEx benötigt die Gruppe 'cost'.");
             _ = System.Text.Json.JsonSerializer.Deserialize<string[]>(appServer.Text)
                 ?? throw new InvalidOperationException("Die App-Server-Argumente sind kein gültiges JSON-Array.");
             await ui.SaveSettingAsync("Scheduler.PollInterval", p.ToString("c"));
@@ -237,6 +262,9 @@ public sealed class MainForm : Form
             await ui.SaveSettingAsync("Scheduler.RetryBackoff", backoff.ToString("c"));
             await ui.SaveSettingAsync("Scheduler.MaximumRetryBackoff", maximumBackoff.ToString("c"));
             await ui.SaveSettingAsync("Claude.Usage.Pattern", regex.Text);
+            await ui.SaveSettingAsync("Claude.Usage.WeeklyPattern", weeklyRegex.Text);
+            await ui.SaveSettingAsync("Claude.Usage.CostPattern", costRegex.Text);
+            await ui.SaveSettingAsync("Claude.Usage.FreeAccountPattern", freeRegex.Text);
             await ui.SaveSettingAsync("Codex.AppServerArguments", appServer.Text);
             schedulerOptions.HistoryUsageEventInterval = h;
             await LoadHistoryAsync();
@@ -257,7 +285,7 @@ public sealed class MainForm : Form
             var usage = data.Platforms
                 .SelectMany(x => x.Profiles.Select(p => new ProfileUsageStatus(x.Definition.Id,
                     p.Profile.DisplayName, p.Usage, x.Definition.Enabled, p.Profile.Enabled,
-                    p.Profile.ShowUsageInStatusBar)))
+                    p.Profile.ShowUsageInStatusBar, p.UsageMessage)))
                 .ToList();
             usageState.Text = ProfileUsageStatusFormatter.Format(usage, DateTimeOffset.UtcNow);
             usageState.Visible = usageState.Text.Length > 0;

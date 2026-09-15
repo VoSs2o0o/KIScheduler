@@ -24,11 +24,17 @@ public sealed class ClaudeOptions
 
 public sealed class ClaudeUsageOptions
 {
-    public const string DefaultPattern = @"Current session:\s*(?<used>\d+)%\s*used";
+    public const string DefaultPattern = @"Current session:\s*(?<used>\d+(?:\.\d+)?)%\s*used(?:\s*[·•]\s*resets\s+(?<reset>[A-Za-z]{3}\s+\d{1,2},\s*\d{1,2}:\d{2}(?:am|pm)\s*\([^)]+\)))?";
+    public const string DefaultWeeklyPattern = @"Current week\s*\(all models\):\s*(?<used>\d+(?:\.\d+)?)%\s*used(?:\s*[·•]\s*resets\s+(?<reset>[A-Za-z]{3}\s+\d{1,2},\s*\d{1,2}:\d{2}(?:am|pm)\s*\([^)]+\)))?";
+    public const string DefaultCostPattern = @"Total cost:\s*(?<cost>\$\s*\d+(?:\.\d+)?)";
+    public const string DefaultFreeAccountPattern = @"\bfree\s+(?:account|plan|tier)\b";
 
     public string Executable { get; set; } = "claude";
     public List<string> Arguments { get; set; } = ["-p", "/usage"];
     public string Pattern { get; set; } = DefaultPattern;
+    public string WeeklyPattern { get; set; } = DefaultWeeklyPattern;
+    public string CostPattern { get; set; } = DefaultCostPattern;
+    public string FreeAccountPattern { get; set; } = DefaultFreeAccountPattern;
     public string UsedGroupName { get; set; } = "used";
     public string? ResetGroupName { get; set; } = "reset";
     public string? ResetFormat { get; set; }
@@ -44,6 +50,9 @@ public sealed class ClaudeUsageOptions
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(Executable);
         ArgumentException.ThrowIfNullOrWhiteSpace(Pattern);
+        ArgumentException.ThrowIfNullOrWhiteSpace(WeeklyPattern);
+        ArgumentException.ThrowIfNullOrWhiteSpace(CostPattern);
+        ArgumentException.ThrowIfNullOrWhiteSpace(FreeAccountPattern);
         ArgumentException.ThrowIfNullOrWhiteSpace(UsedGroupName);
         ArgumentException.ThrowIfNullOrWhiteSpace(Culture);
         ArgumentException.ThrowIfNullOrWhiteSpace(WindowName);

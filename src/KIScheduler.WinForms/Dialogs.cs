@@ -298,7 +298,8 @@ internal sealed class PlatformDialog : Form
 
     public PlatformDialog(PlatformDefinition platform, IReadOnlyList<ProfileRow> profileRows)
     {
-        original = platform; Text = $"Plattform {platform.Id.Value} und Profile"; Width = 1180; Height = 700;
+        original = platform; Text = $"Plattform {platform.Id.Value} und Profile"; Width = 1550; Height = 700;
+        MinimumSize = new Size(1500, 650);
         StartPosition = FormStartPosition.CenterParent;
         var form = WorkItemDialog.CreateLayout();
         WorkItemDialog.AddRow(form, "Plattform-ID", new TextBox { Text = platform.Id.Value, ReadOnly = true });

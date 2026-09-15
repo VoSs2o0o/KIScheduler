@@ -79,11 +79,7 @@ public sealed class CommandRegexReader(IProcessRunner processRunner)
                 && match.Groups[request.ResetGroupName].Success)
             {
                 string resetText = match.Groups[request.ResetGroupName].Value;
-                bool resetParsed = string.IsNullOrWhiteSpace(request.ResetFormat)
-                    ? DateTimeOffset.TryParse(resetText, culture,
-                        DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out DateTimeOffset reset)
-                    : DateTimeOffset.TryParseExact(resetText, request.ResetFormat, culture,
-                        DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out reset);
+                bool resetParsed = TryParseReset(resetText, request, culture, out DateTimeOffset reset);
                 if (!resetParsed)
                     return CommandRegexParseResult.Invalid(
                         $"Resetzeit '{resetText}' konnte nicht gelesen werden.", match.Value);
@@ -102,6 +98,40 @@ public sealed class CommandRegexReader(IProcessRunner processRunner)
             return CommandRegexParseResult.Invalid($"Ungültiger regulärer Ausdruck: {exception.Message}");
         }
     }
+
+    private static bool TryParseReset(string text, CommandRegexReadRequest request, CultureInfo culture,
+        out DateTimeOffset reset)
+    {
+        if (!string.IsNullOrWhiteSpace(request.ResetFormat))
+            return DateTimeOffset.TryParseExact(text, request.ResetFormat, culture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out reset);
+        if (DateTimeOffset.TryParse(text, culture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out reset)) return true;
+
+        // Claude prints a yearless local date and an IANA time-zone name.
+        var zoneStart = text.LastIndexOf(" (", StringComparison.Ordinal);
+        if (zoneStart < 0 || !text.EndsWith(')')) return false;
+        var zoneId = text[(zoneStart + 2)..^1];
+        TimeZoneInfo zone;
+        try { zone = TimeZoneInfo.FindSystemTimeZoneById(zoneId); }
+        catch (TimeZoneNotFoundException) { return false; }
+        catch (InvalidTimeZoneException) { return false; }
+
+        var reference = request.ReferenceTimeUtc ?? DateTimeOffset.UtcNow;
+        var localReference = TimeZoneInfo.ConvertTime(reference, zone);
+        var dateText = text[..zoneStart].Trim();
+        DateTime? closest = null;
+        for (var year = localReference.Year - 1; year <= localReference.Year + 1; year++)
+        {
+            if (!DateTime.TryParseExact($"{dateText} {year}", "MMM d, h:mmtt yyyy",
+                    CultureInfo.GetCultureInfo("en-US"), DateTimeStyles.None, out var candidate)) continue;
+            if (closest is null || Math.Abs((candidate - localReference.DateTime).Ticks)
+                < Math.Abs((closest.Value - localReference.DateTime).Ticks)) closest = candidate;
+        }
+        if (closest is null || zone.IsInvalidTime(closest.Value) || zone.IsAmbiguousTime(closest.Value)) return false;
+        reset = new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(closest.Value, zone));
+        return true;
+    }
 }
 
 public sealed record CommandRegexReadRequest
@@ -118,6 +148,7 @@ public sealed record CommandRegexReadRequest
     public string? ResetGroupName { get; init; } = "reset";
     public string? ResetFormat { get; init; }
     public DateTimeOffset? ConfiguredResetAtUtc { get; init; }
+    public DateTimeOffset? ReferenceTimeUtc { get; init; }
     public string Culture { get; init; } = "en-US";
     public RegexValueUnit Unit { get; init; } = RegexValueUnit.Percent;
     public TimeSpan RegexTimeout { get; init; } = TimeSpan.FromMilliseconds(250);

@@ -1,6 +1,7 @@
 using KIScheduler.Core.Contracts;
 using KIScheduler.Core.Domain;
 using Microsoft.Extensions.Options;
+using System.Text.RegularExpressions;
 
 namespace KIScheduler.Platforms.Claude;
 
@@ -36,7 +37,7 @@ public sealed class ClaudeUsageProvider : IUsageProvider
     }
 
     public PlatformId PlatformId => ClaudePlatform.Id;
-    public UsageProviderCapabilities Capabilities => new(false, false,
+    public UsageProviderCapabilities Capabilities => new(false, true,
         options.Usage.ConfiguredResetAtUtc.HasValue || !string.IsNullOrWhiteSpace(options.Usage.ResetGroupName));
 
     public event EventHandler<UsageChangedEventArgs>? UsageChanged
@@ -109,19 +110,94 @@ public sealed class ClaudeUsageProvider : IUsageProvider
             return WithProfile(UsageReadResult.Unknown(
                 $"Claude-Usage-Befehl wurde mit Exitcode {read.Process.ExitCode} beendet."), profileId);
 
-        return Normalize(read.Parsed, clock.UtcNow, options.Usage, profileId);
+        return ParseOutput(read.Output, profileId).Result;
     }
 
     /// <summary>Tests the configured parser without starting a process or requiring Claude login.</summary>
     public ClaudeUsageTestResult TestSample(string sampleOutput)
     {
         ArgumentNullException.ThrowIfNull(sampleOutput);
-        CommandRegexParseResult parsed = CommandRegexReader.Parse(sampleOutput, CreateRequest());
-        var normalized = directProfileId is { } profileId
-            ? Normalize(parsed, clock.UtcNow, options.Usage, profileId)
+        (UsageReadResult Result, string? MatchedText)? parsed = directProfileId is { } profileId
+            ? ParseOutput(sampleOutput, profileId)
+            : null;
+        var normalized = parsed is not null
+            ? parsed.Value.Result
             : UsageReadResult.Unknown("Claude-Usage-Test benötigt eine Profil-ID.");
-        return new ClaudeUsageTestResult(sampleOutput, parsed.MatchedText, normalized);
+        return new ClaudeUsageTestResult(sampleOutput, parsed?.MatchedText, normalized);
     }
+
+    private (UsageReadResult Result, string? MatchedText) ParseOutput(string output, PlatformProfileId profileId)
+    {
+        var readAtUtc = clock.UtcNow;
+        var session = CommandRegexReader.Parse(output, CreateRequest());
+        if (session.IsMatch && session.ResetAtUtc is null
+            && options.Usage.Pattern != ClaudeUsageOptions.DefaultPattern)
+        {
+            var standard = CommandRegexReader.Parse(output,
+                CreateRequest(pattern: ClaudeUsageOptions.DefaultPattern));
+            if (standard.IsMatch && standard.Percent == session.Percent && standard.ResetAtUtc is not null)
+                session = session with { ResetAtUtc = standard.ResetAtUtc };
+        }
+        var week = CommandRegexReader.Parse(output, CreateRequest(pattern: options.Usage.WeeklyPattern));
+        try
+        {
+            var costMatch = Regex.Match(output, options.Usage.CostPattern,
+                RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, options.Usage.RegexTimeout);
+            var cost = costMatch.Success && costMatch.Groups["cost"].Success
+                ? costMatch.Groups["cost"].Value.Trim() : null;
+            var freeMarker = Regex.IsMatch(output, options.Usage.FreeAccountPattern,
+                RegexOptions.CultureInvariant | RegexOptions.IgnoreCase, options.Usage.RegexTimeout);
+            var subscriptionMarker = output.Contains("using your subscription", StringComparison.OrdinalIgnoreCase);
+            var freeAccount = !subscriptionMarker && freeMarker;
+            var windows = new List<UsageWindow>();
+            if (freeAccount)
+            {
+                windows.Add(new UsageWindow(options.Usage.WindowName, new UsagePercent(100), null,
+                    options.Usage.Source, readAtUtc, UsageQuality.Aktuell));
+            }
+            else
+            {
+                if (session.IsMatch && session.Percent.HasValue)
+                    windows.Add(new UsageWindow(options.Usage.WindowName, new UsagePercent(session.Percent.Value),
+                        session.ResetAtUtc, options.Usage.Source, readAtUtc, UsageQuality.Aktuell));
+                if (week.IsMatch && week.Percent.HasValue)
+                    windows.Add(new UsageWindow("Current week (all models)", new UsagePercent(week.Percent.Value),
+                        week.ResetAtUtc, options.Usage.Source, readAtUtc, UsageQuality.Aktuell,
+                        windowDuration: TimeSpan.FromDays(7)));
+            }
+
+            if (!freeAccount && (session.Error is not null || week.Error is not null))
+                return (UsageReadResult.Unknown(WithCost(session.Error ?? week.Error!, cost))
+                    .ForProfile(profileId), session.MatchedText);
+            if (windows.Count == 0)
+                return (UsageReadResult.Unknown(WithCost(
+                        "Claude-Usage-Ausgabe stimmt mit keinem Muster überein.", cost))
+                    .ForProfile(profileId), session.MatchedText);
+
+            var message = string.Join(" | ", new[]
+            {
+                freeAccount ? "Free account: usage assumed at 100%." : null,
+                cost is null ? null : $"Total cost: {cost}"
+            }.Where(value => value is not null));
+            var snapshot = new UsageSnapshot(ClaudePlatform.Id, profileId, readAtUtc, options.Usage.Source,
+                UsageQuality.Aktuell, windows);
+            return (new UsageReadResult(UsageReadStatus.Available, snapshot, message, profileId),
+                session.MatchedText ?? week.MatchedText);
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            return (UsageReadResult.Unknown("Claude-Regex-Auswertung hat das Zeitlimit überschritten.")
+                .ForProfile(profileId), session.MatchedText);
+        }
+        catch (ArgumentException exception)
+        {
+            return (UsageReadResult.Unknown($"Ungültiger Claude-Regex-Ausdruck: {exception.Message}")
+                .ForProfile(profileId), session.MatchedText);
+        }
+    }
+
+    private static string WithCost(string message, string? cost) =>
+        cost is null ? message : $"{message} | Total cost: {cost}";
 
     public static UsageReadResult Normalize(CommandRegexParseResult parsed, DateTimeOffset readAtUtc,
         ClaudeUsageOptions options, PlatformProfileId profileId)
@@ -146,18 +222,20 @@ public sealed class ClaudeUsageProvider : IUsageProvider
         }
     }
 
-    private CommandRegexReadRequest CreateRequest(string? executable = null, PlatformProfile? profile = null)
+    private CommandRegexReadRequest CreateRequest(string? executable = null, PlatformProfile? profile = null,
+        string? pattern = null)
     {
         ClaudeUsageOptions usage = options.Usage;
         return new CommandRegexReadRequest
         {
             Executable = executable ?? usage.Executable,
             Arguments = usage.Arguments,
-            Pattern = usage.Pattern,
+            Pattern = pattern ?? usage.Pattern,
             UsedGroupName = usage.UsedGroupName,
             ResetGroupName = usage.ResetGroupName,
             ResetFormat = usage.ResetFormat,
             ConfiguredResetAtUtc = usage.ConfiguredResetAtUtc,
+            ReferenceTimeUtc = clock.UtcNow,
             Culture = usage.Culture,
             Unit = usage.Unit,
             RegexTimeout = usage.RegexTimeout,

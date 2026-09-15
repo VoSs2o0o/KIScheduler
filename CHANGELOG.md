@@ -7,6 +7,12 @@ V1.30, 15.09.2026
 - Enlarge the work item window and widen its time selector so all fields and values remain visible
 - Widen the scheduled start column to display the complete local date and time
 - Resume paused jobs when their scheduled start is changed or removed, while still honoring future start times
+- Widen the Platforms and Profiles window so profile details no longer require horizontal scrolling
+- Expand the default Claude and Codex model lists with low, medium, and high effort levels
+- Read Claude subscription session and weekly usage with their local reset times
+- Show Claude's total cost and treat detected free accounts as 100% used
+- Add editable Claude weekly, total-cost, and free-account regular expressions to Settings
+- Show Claude total cost instead of usage percentages in the status bar when enabled
 
 V1.20, 15.09.2026
 - Time Scheduler added
