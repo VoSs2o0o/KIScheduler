@@ -163,9 +163,19 @@ public sealed class WorkItem
     public void ChangeScheduledStart(DateTimeOffset? scheduledStartAtUtc)
     {
         EnsureCanEdit();
-        ScheduledStartAtUtc = scheduledStartAtUtc is null
+        DateTimeOffset? normalizedStart = scheduledStartAtUtc is null
             ? null
             : DomainValidation.Utc(scheduledStartAtUtc.Value, nameof(scheduledStartAtUtc));
+        var changed = ScheduledStartAtUtc != normalizedStart;
+        ScheduledStartAtUtc = normalizedStart;
+
+        // Editing the schedule of a paused item is an explicit request to make it runnable again.
+        // A future start remains protected by the scheduler's due-time check, while removing the
+        // start time makes the item eligible on the next cycle.
+        if (changed && Status == WorkItemStatus.Pausiert)
+        {
+            TransitionTo(WorkItemStatus.InWarteschlange);
+        }
     }
 
     public bool IsScheduledStartDue(DateTimeOffset nowUtc) =>

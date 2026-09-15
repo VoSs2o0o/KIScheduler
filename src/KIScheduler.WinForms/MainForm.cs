@@ -93,7 +93,7 @@ public sealed class MainForm : Form
             TextColumn("Priorität", "Priority", 75), TextColumn("Plattform", "Platform", 85),
             TextColumn("Profil", "Profile", 150),
             TextColumn("Modell", "Model", 135), TextColumn("Effort", "Effort", 70),
-            TextColumn("Projekt", "Project", 150), TextColumn("Geplanter Start", "ScheduledStart", 130),
+            TextColumn("Projekt", "Project", 150), TextColumn("Geplanter Start", "ScheduledStart", 165),
             TextColumn("Usage", "Usage", 190),
             TextColumn("Status", "Status", 150), TextColumn("Titel", "Title", 230),
             TextColumn("Begründung", "Reason", 340));

@@ -72,6 +72,25 @@ public sealed class WorkItemTests
     }
 
     [TestMethod]
+    public void ChangingOrRemovingScheduleResumesPausedWork()
+    {
+        var item = CreateWorkItem();
+        item.TransitionTo(WorkItemStatus.InWarteschlange);
+        item.TransitionTo(WorkItemStatus.Pausiert);
+
+        item.ChangeScheduledStart(Now.AddHours(1));
+
+        Assert.AreEqual(WorkItemStatus.InWarteschlange, item.Status);
+        Assert.IsFalse(item.IsScheduledStartDue(Now));
+
+        item.TransitionTo(WorkItemStatus.Pausiert);
+        item.ChangeScheduledStart(null);
+
+        Assert.AreEqual(WorkItemStatus.InWarteschlange, item.Status);
+        Assert.IsTrue(item.IsScheduledStartDue(Now));
+    }
+
+    [TestMethod]
     public void PlatformAndModelAreFrozenAfterFirstAttemptStarts()
     {
         var item = CreateWorkItem();

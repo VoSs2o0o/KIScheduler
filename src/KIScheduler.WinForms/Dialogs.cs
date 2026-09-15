@@ -22,7 +22,7 @@ internal sealed class WorkItemDialog : Form
         Format = DateTimePickerFormat.Custom,
         CustomFormat = "HH:mm",
         ShowUpDown = true,
-        Width = 70
+        Width = 90
     };
     private readonly Button fiveHourSlotButton = new() { Text = "5HSlot+1", AutoSize = true };
     private readonly Button hourPlusButton = new() { Text = "H+1", AutoSize = true };
@@ -34,7 +34,8 @@ internal sealed class WorkItemDialog : Form
         var readOnly = item is not null && !duplicate && !item.CanEdit;
         Text = readOnly ? "Auftrag anzeigen" : duplicate ? "Auftrag duplizieren"
             : item is null ? "Auftrag anlegen" : "Auftrag bearbeiten";
-        Width = 780; Height = 470; StartPosition = FormStartPosition.CenterParent;
+        Width = 780; Height = 580; MinimumSize = new Size(780, 560);
+        StartPosition = FormStartPosition.CenterParent;
         var form = CreateLayout();
         AddRow(form, "Titel", title); AddRow(form, "Priorität", priority); AddRow(form, "Plattform", platform);
         AddRow(form, "Profil", profile); AddRow(form, "Modell", model); AddRow(form, "Effort", effort);

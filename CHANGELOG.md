@@ -4,6 +4,9 @@ V1.30, 15.09.2026
 - Bring the running KIScheduler window to the foreground when a second instance is opened
 - Trust scheduled Codex project directories per invocation and support projects before Git initialization
 - Run Claude project jobs non-interactively without a blocking workspace trust dialog
+- Enlarge the work item window and widen its time selector so all fields and values remain visible
+- Widen the scheduled start column to display the complete local date and time
+- Resume paused jobs when their scheduled start is changed or removed, while still honoring future start times
 
 V1.20, 15.09.2026
 - Time Scheduler added

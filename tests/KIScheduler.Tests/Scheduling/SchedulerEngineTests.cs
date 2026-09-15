@@ -65,6 +65,45 @@ public sealed class SchedulerEngineTests
     }
 
     [TestMethod]
+    public async Task ChangingPausedClaudeScheduleResumesItAtTheSelectedTime()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("claude");
+        var item = await fixture.AddWorkItemAsync("claude", await fixture.AddProjectAsync("scheduled-claude"), 50);
+        item.TransitionTo(WorkItemStatus.Pausiert);
+        item.ChangeScheduledStart(fixture.Clock.UtcNow.AddHours(1));
+        await fixture.WorkItems.SaveAsync(item);
+
+        Assert.AreEqual(WorkItemStatus.InWarteschlange, item.Status);
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
+
+        fixture.Clock.Advance(TimeSpan.FromHours(1));
+        fixture.SetUsage("claude", 20);
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        Assert.AreEqual(WorkItemStatus.TechnischErfolgreich,
+            (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+    }
+
+    [TestMethod]
+    public async Task RemovingScheduleFromPausedClaudeWorkMakesItImmediatelyEligible()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("claude");
+        var item = await fixture.AddWorkItemAsync("claude", await fixture.AddProjectAsync("unscheduled-claude"), 50);
+        item.ChangeScheduledStart(fixture.Clock.UtcNow.AddHours(1));
+        item.TransitionTo(WorkItemStatus.Pausiert);
+        item.ChangeScheduledStart(null);
+        await fixture.WorkItems.SaveAsync(item);
+
+        Assert.AreEqual(WorkItemStatus.InWarteschlange, item.Status);
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        Assert.AreEqual(WorkItemStatus.TechnischErfolgreich,
+            (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+    }
+
+    [TestMethod]
     public async Task DifferentPlatformsCanRunInParallelInDifferentProjects()
     {
         await using var fixture = await SchedulerFixture.CreateAsync("codex", "claude");
