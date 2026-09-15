@@ -20,6 +20,13 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        using var singleInstance = SingleInstanceCoordinator.Acquire();
+        if (!singleInstance.IsPrimaryInstance)
+        {
+            singleInstance.NotifyPrimaryInstance();
+            return 0;
+        }
+
         ApplicationConfiguration.Initialize();
 
         using IHost host = CreateHostBuilder(args).Build();
@@ -43,7 +50,10 @@ internal static class Program
 
         try
         {
-            Application.Run(host.Services.GetRequiredService<MainForm>());
+            var mainForm = host.Services.GetRequiredService<MainForm>();
+            _ = mainForm.Handle;
+            singleInstance.StartListening(mainForm.RestoreAndActivate);
+            Application.Run(mainForm);
         }
         finally
         {

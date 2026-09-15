@@ -173,9 +173,12 @@ public sealed class CodexPlatform : IAiPlatform
             "--json",
             "--model", request.ModelId.Value,
             "--config", $"model_reasoning_effort=\"{EscapeToml(request.Effort.Value)}\"",
+            "--config", $"projects.\"{EscapeToml(request.WorkingDirectory)}\".trust_level=\"trusted\"",
             "--sandbox", options.Sandbox,
             "--cd", request.WorkingDirectory
         };
+
+        arguments.Add("--skip-git-repo-check");
 
         if (string.IsNullOrWhiteSpace(request.SessionId))
         {

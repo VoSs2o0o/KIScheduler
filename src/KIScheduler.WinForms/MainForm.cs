@@ -619,7 +619,22 @@ public sealed class MainForm : Form
         menu.Items.Add(new ToolStripSeparator()); menu.Items.Add("Beenden", null, async (_, _) => await ExitAsync()); tray.ContextMenuStrip = menu; tray.DoubleClick += (_, _) => RestoreFromTray();
     }
 
-    private void RestoreFromTray() { Show(); WindowState = FormWindowState.Normal; Activate(); }
+    internal void RestoreAndActivate()
+    {
+        if (IsDisposed) return;
+        if (InvokeRequired)
+        {
+            BeginInvoke(RestoreAndActivate);
+            return;
+        }
+
+        Show();
+        WindowState = FormWindowState.Normal;
+        BringToFront();
+        Activate();
+    }
+
+    private void RestoreFromTray() => RestoreAndActivate();
     private void OnFormClosing(object? sender, FormClosingEventArgs e) { if (allowClose) return; e.Cancel = true; Hide(); tray.ShowBalloonTip(1500, "KIScheduler", "Die Verarbeitung läuft im Infobereich weiter.", ToolTipIcon.Info); }
     private async Task ExitAsync() { if (scheduler.RunningCount > 0 && MessageBox.Show(this, $"{scheduler.RunningCount} Auftrag/Aufträge laufen. Beim Beenden werden die Prozessbäume kontrolliert beendet. Fortfahren?", "KIScheduler beenden", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; allowClose = true; refreshTimer.Stop(); Enabled = false; using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(35)); try { await scheduler.StopAsync(timeout.Token); } catch (OperationCanceledException) { MessageBox.Show(this, "Die Prozesse konnten nicht rechtzeitig beendet werden.", "Beenden", MessageBoxButtons.OK, MessageBoxIcon.Error); allowClose = false; Enabled = true; refreshTimer.Start(); return; } tray.Visible = false; Close(); }
 

@@ -79,6 +79,12 @@ public sealed class CodexAdapterTests
         Assert.IsTrue(runner.LastRequest.SuppressOutputLogging);
         CollectionAssert.Contains(runner.LastRequest.Arguments.ToList(), "gpt-test");
         CollectionAssert.Contains(runner.LastRequest.Arguments.ToList(), "model_reasoning_effort=\"high\"");
+        string escapedWorkingDirectory = Environment.CurrentDirectory
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal);
+        CollectionAssert.Contains(runner.LastRequest.Arguments.ToList(),
+            $"projects.\"{escapedWorkingDirectory}\".trust_level=\"trusted\"");
+        CollectionAssert.Contains(runner.LastRequest.Arguments.ToList(), "--skip-git-repo-check");
         Assert.IsTrue(result.MayHavePartialChanges);
     }
 
