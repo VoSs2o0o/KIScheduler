@@ -17,6 +17,22 @@ V1.30, 15.09.2026
 - Add editable Claude weekly, total-cost, and free-account regular expressions to Settings
 - Show Claude total cost instead of usage percentages in the status bar when enabled
 
+- Display version 1.3 from executable metadata at the bottom of Settings
+
+- Let users choose whether minimizing sends the window to the taskbar or tray
+
+- Arrange the first six runtime settings in two rows across the full window width
+
+- Show Claude regular expressions in wide multiline text boxes with clearer quota, cost, and account-type labels
+
+- Explain that Claude sample output is temporary and is not saved with Settings
+
+- Add a GitHub project link beside the version display at the bottom of Settings
+
+- Add a separate Claude regular-expression test area with pattern selection, matching sample output, and an immediate test button
+
+- Stop matching regular expressions against sample output when saving Settings
+
 V1.20, 15.09.2026
 - Time Scheduler added
 - various Patches

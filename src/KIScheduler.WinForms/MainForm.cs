@@ -47,6 +47,7 @@ public sealed class MainForm : Form
     private string? currentResumeCommand;
     private DashboardData? data;
     private bool allowClose;
+    private bool minimizeToTray;
     private bool restoringQueueSelection;
     private int historyLoadVersion;
 
@@ -57,6 +58,8 @@ public sealed class MainForm : Form
         this.scheduler = scheduler;
         this.schedulerOptions = schedulerOptions;
         this.configuration = configuration;
+        minimizeToTray = bool.TryParse(configuration["UI:MinimizeToTray"], out var configuredMinimizeToTray)
+            && configuredMinimizeToTray;
         Text = "KIScheduler";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1000, 650);
@@ -92,6 +95,7 @@ public sealed class MainForm : Form
         filter.TextChanged += (_, _) => ApplyQueueRows();
         statusFilter.SelectedIndexChanged += (_, _) => ApplyQueueRows();
         FormClosing += OnFormClosing;
+        Resize += (_, _) => { if (WindowState == FormWindowState.Minimized && minimizeToTray) Hide(); };
         FormClosed += (_, _) => { refreshTimer.Dispose(); tray.Dispose(); refreshGate.Dispose(); };
     }
 
@@ -203,29 +207,162 @@ public sealed class MainForm : Form
 
     private TabPage BuildSettingsPage()
     {
-        var panel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown,
-            WrapContents = false, AutoScroll = true, Padding = new Padding(20) };
-        panel.Controls.Add(new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold), Text = "Laufzeit- und Provider-Einstellungen" });
-        panel.Controls.Add(new Label { AutoSize = true, MaximumSize = new Size(900, 0), Text =
-            "Änderungen werden validiert und sicher für den nächsten Anwendungsstart gespeichert. Zugangsdaten werden hier bewusst nicht abgelegt." });
-        var poll = Field(panel, "Scheduler-Polling (hh:mm:ss)", schedulerOptions.PollInterval.ToString("c"));
-        var timeout = Field(panel, "Auftrags-Timeout (hh:mm:ss)", schedulerOptions.ExecutionTimeout.ToString("c"));
-        var usageHistoryInterval = Field(panel, "Usage-Ereignisse in Historie (hh:mm:ss)",
-            schedulerOptions.HistoryUsageEventInterval.ToString("c"));
-        var maximumAttempts = Field(panel, "Maximale Versuche", schedulerOptions.MaximumAttempts.ToString());
-        var retryBackoff = Field(panel, "Retry-Backoff (hh:mm:ss)", schedulerOptions.RetryBackoff.ToString("c"));
-        var maximumRetryBackoff = Field(panel, "Maximaler Retry-Backoff (hh:mm:ss)",
-            schedulerOptions.MaximumRetryBackoff.ToString("c"));
-        var regex = Field(panel, "Claude Session-RegEx", configuration["Claude:Usage:Pattern"]
-            ?? ClaudeUsageOptions.DefaultPattern, 720);
-        var weeklyRegex = Field(panel, "Claude Wochen-RegEx", configuration["Claude:Usage:WeeklyPattern"]
-            ?? ClaudeUsageOptions.DefaultWeeklyPattern, 720);
-        var costRegex = Field(panel, "Claude Total-cost-RegEx", configuration["Claude:Usage:CostPattern"]
-            ?? ClaudeUsageOptions.DefaultCostPattern, 720);
-        var freeRegex = Field(panel, "Claude Free-Account-RegEx", configuration["Claude:Usage:FreeAccountPattern"]
-            ?? ClaudeUsageOptions.DefaultFreeAccountPattern, 720);
-        var sample = Field(panel, "RegEx-Testausgabe", "Current session: 42% used", 720);
-        var appServer = Field(panel, "Codex App-Server-Argumente (JSON)", "[\"app-server\",\"--listen\",\"stdio://\"]", 720);
+        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+        var content = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3,
+            Padding = new Padding(16, 12, 16, 12) };
+        for (var column = 0; column < 3; column++)
+            content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f / 3f));
+
+        void AddWide(Control control, int row)
+        {
+            control.Dock = DockStyle.Fill;
+            content.Controls.Add(control, 0, row);
+            content.SetColumnSpan(control, 3);
+        }
+
+        TextBox AddField(string label, string value, int column, int row, int span = 1,
+            bool multiline = false)
+        {
+            var field = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true,
+                ColumnCount = 1, RowCount = 2, Margin = new Padding(6, 4, 6, 8) };
+            field.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            field.RowStyles.Add(new RowStyle(SizeType.Absolute, multiline ? 64 : 28));
+            field.Controls.Add(new Label { Text = label, AutoSize = true, Margin = new Padding(0, 0, 0, 4) }, 0, 0);
+            var box = new TextBox { Text = value, Dock = DockStyle.Fill, Multiline = multiline,
+                WordWrap = !multiline, ScrollBars = multiline ? ScrollBars.Both : ScrollBars.None };
+            field.Controls.Add(box, 0, 1);
+            content.Controls.Add(field, column, row);
+            if (span > 1) content.SetColumnSpan(field, span);
+            return box;
+        }
+
+        AddWide(new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold),
+            Text = "Laufzeit- und Provider-Einstellungen", Margin = new Padding(6, 4, 6, 8) }, 0);
+        AddWide(new Label { AutoSize = true, Text =
+            "Änderungen werden validiert und gespeichert. Die Laufzeit- und Provider-Einstellungen gelten nach dem nächsten Start.",
+            Margin = new Padding(6, 0, 6, 12) }, 1);
+        var poll = AddField("Scheduler-Polling (hh:mm:ss)", schedulerOptions.PollInterval.ToString("c"), 0, 2);
+        var timeout = AddField("Auftrags-Timeout (hh:mm:ss)", schedulerOptions.ExecutionTimeout.ToString("c"), 1, 2);
+        var usageHistoryInterval = AddField("Usage-Ereignisse in Historie (hh:mm:ss)",
+            schedulerOptions.HistoryUsageEventInterval.ToString("c"), 2, 2);
+        var maximumAttempts = AddField("Maximale Versuche", schedulerOptions.MaximumAttempts.ToString(), 0, 3);
+        var retryBackoff = AddField("Retry-Backoff (hh:mm:ss)", schedulerOptions.RetryBackoff.ToString("c"), 1, 3);
+        var maximumRetryBackoff = AddField("Maximaler Retry-Backoff (hh:mm:ss)",
+            schedulerOptions.MaximumRetryBackoff.ToString("c"), 2, 3);
+
+        var minimizeField = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true,
+            ColumnCount = 1, RowCount = 2, Margin = new Padding(6, 4, 6, 8) };
+        minimizeField.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        minimizeField.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        minimizeField.Controls.Add(new Label { Text = "Beim Minimieren", AutoSize = true,
+            Margin = new Padding(0, 0, 0, 4) }, 0, 0);
+        var minimizeTarget = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+        minimizeTarget.Items.AddRange(["Taskleiste", "Infobereich (Tray)"]);
+        minimizeTarget.SelectedIndex = minimizeToTray ? 1 : 0;
+        minimizeField.Controls.Add(minimizeTarget, 0, 1);
+        content.Controls.Add(minimizeField, 0, 4);
+
+        AddWide(new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold),
+            Text = "Claude-Ausgabe erkennen", Margin = new Padding(6, 16, 6, 4) }, 5);
+        var regex = AddField("Claude Session-RegEx (5h-Kontingent)",
+            configuration["Claude:Usage:Pattern"] ?? ClaudeUsageOptions.DefaultPattern, 0, 6, 3, true);
+        var weeklyRegex = AddField("Claude Wochen-RegEx", configuration["Claude:Usage:WeeklyPattern"]
+            ?? ClaudeUsageOptions.DefaultWeeklyPattern, 0, 7, 3, true);
+        var costRegex = AddField("Claude Total-Cost-RegEx (ohne Abo)",
+            configuration["Claude:Usage:CostPattern"] ?? ClaudeUsageOptions.DefaultCostPattern, 0, 8, 3, true);
+        var freeRegex = AddField("Claude Kontotyp-RegEx (Free-Account erkennen)",
+            configuration["Claude:Usage:FreeAccountPattern"] ?? ClaudeUsageOptions.DefaultFreeAccountPattern,
+            0, 9, 3, true);
+        AddWide(new Label { AutoSize = true, Text =
+            "Der Kontotyp-RegEx erkennt Hinweise wie 'free account', 'free plan' oder 'free tier'. Für erkannte Konten ohne Abo wird das Kontingent als verbraucht angezeigt.",
+            Margin = new Padding(6, 4, 6, 8) }, 10);
+        var testArea = new GroupBox { Text = "RegEx-Test", Dock = DockStyle.Fill, Height = 250,
+            Margin = new Padding(6, 14, 6, 12) };
+        var testLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6,
+            Padding = new Padding(12, 8, 12, 8) };
+        testLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        testLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        testLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        testLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        testLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        testLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        testLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        testLayout.Controls.Add(new Label { Text = "RegEx auswählen", AutoSize = true }, 0, 0);
+        var regexChoice = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+        regexChoice.Items.AddRange(["Session (5h-Kontingent)", "Woche", "Total Cost (ohne Abo)",
+            "Kontotyp (Free-Account)"]);
+        testLayout.Controls.Add(regexChoice, 0, 1);
+        testLayout.Controls.Add(new Label { Text = "Claude-Beispielausgabe (anpassbar, wird nicht gespeichert)",
+            AutoSize = true, Margin = new Padding(0, 8, 0, 2) }, 0, 2);
+        var sample = new TextBox { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Vertical,
+            Text = "Current session: 42% used" };
+        testLayout.Controls.Add(sample, 0, 3);
+        var testButton = new Button { Text = "Test RegEx", AutoSize = true,
+            Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 0, 4) };
+        testLayout.Controls.Add(testButton, 0, 4);
+        var testResult = new Label { Dock = DockStyle.Fill, Text = "Noch nicht getestet.",
+            TextAlign = ContentAlignment.MiddleLeft };
+        testLayout.Controls.Add(testResult, 0, 5);
+        testArea.Controls.Add(testLayout);
+        AddWide(testArea, 11);
+
+        var regexFields = new[] { regex, weeklyRegex, costRegex, freeRegex };
+        var exampleOutputs = new[] { "Current session: 42% used",
+            "Current week (all models): 76% used", "Total cost: $0.0000", "Free account" };
+        var previousChoice = -1;
+        regexChoice.SelectedIndexChanged += (_, _) =>
+        {
+            if (previousChoice >= 0) exampleOutputs[previousChoice] = sample.Text;
+            previousChoice = regexChoice.SelectedIndex;
+            sample.Text = exampleOutputs[previousChoice];
+            testResult.Text = "Noch nicht getestet.";
+            testResult.ForeColor = SystemColors.ControlText;
+        };
+        regexChoice.SelectedIndex = 0;
+        sample.TextChanged += (_, _) => testResult.Text = "Noch nicht getestet.";
+        foreach (var field in regexFields)
+            field.TextChanged += (_, _) => testResult.Text = "Noch nicht getestet.";
+        testButton.Click += (_, _) =>
+        {
+            try
+            {
+                var selected = regexChoice.SelectedIndex;
+                var match = System.Text.RegularExpressions.Regex.Match(sample.Text, regexFields[selected].Text,
+                    System.Text.RegularExpressions.RegexOptions.CultureInvariant
+                    | System.Text.RegularExpressions.RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
+                if (!match.Success)
+                {
+                    testResult.Text = "Kein Treffer in der Beispielausgabe.";
+                    testResult.ForeColor = Color.Firebrick;
+                    return;
+                }
+                if (selected == 3)
+                {
+                    testResult.Text = $"Treffer: {match.Value}";
+                }
+                else
+                {
+                    var groupName = selected == 2 ? "cost" : "used";
+                    var group = match.Groups[groupName];
+                    if (!group.Success)
+                    {
+                        testResult.Text = $"Treffer ohne benötigte Gruppe '{groupName}'.";
+                        testResult.ForeColor = Color.Firebrick;
+                        return;
+                    }
+                    testResult.Text = $"Treffer: {groupName} = {group.Value}";
+                }
+                testResult.ForeColor = Color.DarkGreen;
+            }
+            catch (Exception exception) when (exception is ArgumentException
+                or System.Text.RegularExpressions.RegexMatchTimeoutException)
+            {
+                testResult.Text = $"RegEx-Test fehlgeschlagen: {exception.Message}";
+                testResult.ForeColor = Color.Firebrick;
+            }
+        };
+        var appServer = AddField("Codex App-Server-Argumente (JSON)",
+            "[\"app-server\",\"--listen\",\"stdio://\"]", 0, 12, 3);
         var save = new Button { Text = "Einstellungen prüfen und speichern", AutoSize = true };
         save.Click += async (_, _) => await UiAction(async () =>
         {
@@ -243,19 +380,6 @@ public sealed class MainForm : Form
             SchedulerUiService.ValidateRegex(weeklyRegex.Text);
             SchedulerUiService.ValidateRegex(costRegex.Text);
             SchedulerUiService.ValidateRegex(freeRegex.Text);
-            var sessionMatch = System.Text.RegularExpressions.Regex.Match(sample.Text, regex.Text,
-                System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
-            if (!sessionMatch.Success || !sessionMatch.Groups["used"].Success)
-                throw new InvalidOperationException("Der Session-RegEx benötigt die Gruppe 'used' und muss auf die Testausgabe passen.");
-            var weekMatch = System.Text.RegularExpressions.Regex.Match("Current week (all models): 76% used",
-                weeklyRegex.Text, System.Text.RegularExpressions.RegexOptions.CultureInvariant,
-                TimeSpan.FromMilliseconds(500));
-            if (!weekMatch.Success || !weekMatch.Groups["used"].Success)
-                throw new InvalidOperationException("Der Wochen-RegEx benötigt die Gruppe 'used'.");
-            var costMatch = System.Text.RegularExpressions.Regex.Match("Total cost: $0.0000", costRegex.Text,
-                System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(500));
-            if (!costMatch.Success || !costMatch.Groups["cost"].Success)
-                throw new InvalidOperationException("Der Total-cost-RegEx benötigt die Gruppe 'cost'.");
             _ = System.Text.Json.JsonSerializer.Deserialize<string[]>(appServer.Text)
                 ?? throw new InvalidOperationException("Die App-Server-Argumente sind kein gültiges JSON-Array.");
             await ui.SaveSettingAsync("Scheduler.PollInterval", p.ToString("c"));
@@ -269,11 +393,46 @@ public sealed class MainForm : Form
             await ui.SaveSettingAsync("Claude.Usage.CostPattern", costRegex.Text);
             await ui.SaveSettingAsync("Claude.Usage.FreeAccountPattern", freeRegex.Text);
             await ui.SaveSettingAsync("Codex.AppServerArguments", appServer.Text);
+            await ui.SaveSettingAsync("UI.MinimizeToTray", (minimizeTarget.SelectedIndex == 1).ToString());
+            minimizeToTray = minimizeTarget.SelectedIndex == 1;
             schedulerOptions.HistoryUsageEventInterval = h;
             await LoadHistoryAsync();
-            MessageBox.Show(this, "Die gültigen Einstellungen wurden gespeichert und gelten nach dem nächsten Start.", "Einstellungen");
+            MessageBox.Show(this, "Die Einstellungen wurden gespeichert. Das Minimierungsziel gilt sofort; die übrigen Änderungen gelten nach dem nächsten Start.", "Einstellungen");
         });
-        panel.Controls.Add(save); var page = new TabPage("Einstellungen"); page.Controls.Add(panel); return page;
+        save.Margin = new Padding(6, 12, 6, 8);
+        content.Controls.Add(save, 0, 13);
+        content.SetColumnSpan(save, 3);
+        scroll.Controls.Add(content);
+        const string projectUrl = "https://github.com/VoSs2o0o/KIScheduler";
+        var footer = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = 34, ColumnCount = 2,
+            Padding = new Padding(22, 0, 22, 0) };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+        var projectLink = new LinkLabel { Dock = DockStyle.Fill, Text = projectUrl,
+            TextAlign = ContentAlignment.MiddleLeft };
+        projectLink.Links.Add(0, projectUrl.Length, projectUrl);
+        projectLink.LinkClicked += (_, _) =>
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(projectUrl)
+                    { UseShellExecute = true });
+            }
+            catch (Exception exception)
+            {
+                MessageBox.Show(this, $"Der GitHub-Link konnte nicht geöffnet werden: {exception.Message}",
+                    "GitHub-Link", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        };
+        var version = new Label { Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleRight,
+            Text = $"Version {Application.ProductVersion}" };
+        footer.Controls.Add(projectLink, 0, 0);
+        footer.Controls.Add(version, 1, 0);
+        var page = new TabPage("Einstellungen");
+        page.Controls.Add(scroll);
+        page.Controls.Add(footer);
+        return page;
     }
 
     private async Task RefreshAsync(bool providerRefresh = false)
