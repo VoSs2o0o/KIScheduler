@@ -24,6 +24,7 @@ public interface IPlatformProfileRepository
     Task<IReadOnlyList<PlatformProfile>> ListAsync(PlatformId? platformId = null,
         CancellationToken cancellationToken = default);
     Task SaveAsync(PlatformProfile profile, CancellationToken cancellationToken = default);
+    Task SetDefaultAsync(PlatformProfileId id, CancellationToken cancellationToken = default);
     Task<bool> DisableAsync(PlatformProfileId id, CancellationToken cancellationToken = default);
 }
 

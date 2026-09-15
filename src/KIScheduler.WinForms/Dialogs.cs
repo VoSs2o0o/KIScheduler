@@ -190,9 +190,7 @@ internal sealed class WorkItemDialog : Form
 
     private sealed record ProfileOption(PlatformProfile Profile)
     {
-        public override string ToString() => Profile.IsDefault
-            ? $"{Profile.DisplayName} ({Profile.ConfigurationDirectory})"
-            : $"{Profile.DisplayName} ({Profile.Name})";
+        public override string ToString() => Profile.DisplayName;
     }
 
     private sealed record ProjectOption(ProjectDefinition Definition)
@@ -264,6 +262,7 @@ internal sealed class PlatformDialog : Form
         var profileTools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
         profileTools.Items.Add(ProfileButton("Hinzufügen", ProfileAction.Hinzufuegen));
         profileTools.Items.Add(ProfileButton("Bearbeiten", ProfileAction.Bearbeiten));
+        profileTools.Items.Add(ProfileButton("Als Standard", ProfileAction.AlsStandard));
         profileTools.Items.Add(ProfileButton("Entfernen/Deaktivieren", ProfileAction.Deaktivieren));
         profileTools.Items.Add(ProfileButton("Anmeldung/Usage prüfen", ProfileAction.Pruefen));
         var profilePanel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8) };
@@ -323,7 +322,7 @@ internal sealed class PlatformDialog : Form
     private static DataGridViewTextBoxColumn TextColumn(string title, string name, int width) => new()
         { HeaderText = title, Name = name, Width = width, SortMode = DataGridViewColumnSortMode.Automatic };
 
-    internal enum ProfileAction { None, Hinzufuegen, Bearbeiten, Deaktivieren, Pruefen }
+    internal enum ProfileAction { None, Hinzufuegen, Bearbeiten, AlsStandard, Deaktivieren, Pruefen }
 }
 
 internal sealed class PlatformProfileDialog : Form
@@ -371,11 +370,7 @@ internal sealed class PlatformProfileDialog : Form
             name.Text = profile.Name; displayName.Text = profile.DisplayName;
             directory.Text = profile.ConfigurationDirectory;
             showUsage.Checked = profile.ShowUsageInStatusBar;
-            if (profile.IsDefault)
-            {
-                name.ReadOnly = true; displayName.ReadOnly = true;
-                name.Text = PlatformProfile.DefaultName; displayName.Text = PlatformProfile.DefaultDisplayName;
-            }
+            name.ReadOnly = true;
         }
     }
 

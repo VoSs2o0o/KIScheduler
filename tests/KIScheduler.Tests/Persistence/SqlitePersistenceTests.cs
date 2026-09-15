@@ -198,15 +198,19 @@ public sealed class SqlitePersistenceTests
             await repository.SaveAsync(second);
             await repository.SaveAsync(removable);
 
-            await repository.SaveAsync(new PlatformProfile(second.Id, second.PlatformId, "work", "Arbeit",
+            await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => repository.SaveAsync(
+                new PlatformProfile(second.Id, second.PlatformId, "work", "Arbeit",
+                    second.ConfigurationDirectory)));
+            await repository.SaveAsync(new PlatformProfile(second.Id, second.PlatformId, second.Name, "Arbeit",
                 second.ConfigurationDirectory));
             Assert.AreEqual("Arbeit", (await repository.GetAsync(second.Id))!.DisplayName);
 
-            Assert.IsTrue(await repository.DisableAsync(originalDefault.Id));
-            await repository.SaveAsync(new PlatformProfile(second.Id, second.PlatformId,
-                PlatformProfile.DefaultName, PlatformProfile.DefaultDisplayName, second.ConfigurationDirectory,
-                isDefault: true));
+            await repository.SetDefaultAsync(second.Id);
             Assert.AreEqual(second.Id, (await repository.GetDefaultAsync(new("codex")))!.Id);
+            Assert.AreEqual("codex2", (await repository.GetAsync(second.Id))!.Name);
+            Assert.AreEqual("Arbeit", (await repository.GetAsync(second.Id))!.DisplayName);
+            Assert.IsTrue((await repository.GetAsync(originalDefault.Id))!.Enabled);
+            Assert.IsFalse((await repository.GetAsync(originalDefault.Id))!.IsDefault);
 
             Assert.IsTrue(await repository.DisableAsync(removable.Id));
             Assert.IsTrue(Directory.Exists(removableDirectory));
@@ -229,12 +233,11 @@ public sealed class SqlitePersistenceTests
         await repository.SaveAsync(replacement);
 
         Assert.IsTrue(await repository.DisableAsync(oldDefault.Id));
-        await repository.SaveAsync(new PlatformProfile(replacement.Id, replacement.PlatformId,
-            PlatformProfile.DefaultName, PlatformProfile.DefaultDisplayName,
-            replacement.ConfigurationDirectory, isDefault: true));
+        await repository.SetDefaultAsync(replacement.Id);
 
         Assert.IsFalse((await repository.GetAsync(oldDefault.Id))!.Enabled);
         Assert.AreEqual(replacement.Id, (await repository.GetDefaultAsync(new("codex")))!.Id);
+        Assert.AreEqual("codex2", (await repository.GetAsync(replacement.Id))!.Name);
         Assert.AreEqual(2, (await repository.ListAsync(new("codex"))).Count(x => x.IsDefault));
     }
 

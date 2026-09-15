@@ -51,12 +51,17 @@ public sealed class PlatformProfileTests
     }
 
     [TestMethod]
-    public void DefaultNameAndFlagCannotDiverge()
+    public void DefaultFlagDoesNotChangeTheStableInternalName()
     {
         var path = Path.Combine(Path.GetTempPath(), "profile-default-rules");
-        Assert.ThrowsException<ArgumentException>(() => new PlatformProfile(PlatformProfileId.New(),
-            new("codex"), "other", "Standard", path, isDefault: true));
-        Assert.ThrowsException<ArgumentException>(() => new PlatformProfile(PlatformProfileId.New(),
-            new("codex"), "DEFAULT", "Anderes Profil", path));
+        var promoted = new PlatformProfile(PlatformProfileId.New(), new("codex"), "other",
+            "Arbeitsprofil", path, isDefault: true);
+        var demoted = new PlatformProfile(PlatformProfileId.New(), new("codex"),
+            PlatformProfile.DefaultName, "Persönlich", Path.Combine(path, "default"));
+
+        Assert.AreEqual("other", promoted.Name);
+        Assert.IsTrue(promoted.IsDefault);
+        Assert.AreEqual(PlatformProfile.DefaultName, demoted.Name);
+        Assert.IsFalse(demoted.IsDefault);
     }
 }

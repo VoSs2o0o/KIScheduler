@@ -462,6 +462,8 @@ public sealed class CodexAdapterTests
             Task.FromResult<IReadOnlyList<PlatformProfile>>([profile]);
         public Task SaveAsync(PlatformProfile value, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+        public Task SetDefaultAsync(PlatformProfileId id, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
         public Task<bool> DisableAsync(PlatformProfileId id, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);
     }

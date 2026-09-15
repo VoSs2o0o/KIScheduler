@@ -387,6 +387,9 @@ public sealed class ClaudeAdapterTests
         public Task SaveAsync(PlatformProfile value, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 
+        public Task SetDefaultAsync(PlatformProfileId id, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
         public Task<bool> DisableAsync(PlatformProfileId id, CancellationToken cancellationToken = default) =>
             Task.FromResult(false);
     }

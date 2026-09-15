@@ -253,6 +253,10 @@ public sealed class SqlitePlatformProfileRepository(
         if (existing is not null && !existing.PlatformId.Equals(profile.PlatformId.Value,
                 StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Die Plattform eines bestehenden Profils kann nicht geändert werden.");
+        if (existing is not null && !existing.Name.Equals(profile.Name, StringComparison.Ordinal))
+            throw new InvalidOperationException("Der interne Name eines bestehenden Profils kann nicht geändert werden.");
+        if (existing is not null && existing.IsDefault != profile.IsDefault)
+            throw new InvalidOperationException("Das Standardprofil kann nur über die dafür vorgesehene Aktion geändert werden.");
 
         var siblings = await db.PlatformProfiles.AsNoTracking()
             .Where(x => x.Id != profile.Id.Value).ToListAsync(cancellationToken);
@@ -290,6 +294,24 @@ public sealed class SqlitePlatformProfileRepository(
         await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
         return await db.PlatformProfiles.Where(x => x.Id == id.Value && x.Enabled)
             .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.Enabled, false), cancellationToken) > 0;
+    }
+
+    public async Task SetDefaultAsync(PlatformProfileId id, CancellationToken cancellationToken = default)
+    {
+        await using var db = await contextFactory.CreateDbContextAsync(cancellationToken);
+        await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
+        var selected = await db.PlatformProfiles.SingleOrDefaultAsync(x => x.Id == id.Value,
+            cancellationToken) ?? throw new InvalidOperationException("Das Profil wurde nicht gefunden.");
+        if (!selected.Enabled)
+            throw new InvalidOperationException("Nur ein aktives Profil kann als Standard festgelegt werden.");
+        if (selected.IsDefault) return;
+
+        await db.PlatformProfiles
+            .Where(x => x.PlatformId == selected.PlatformId && x.IsDefault && x.Enabled)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(x => x.IsDefault, false), cancellationToken);
+        selected.IsDefault = true;
+        await db.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private static PlatformProfileRow ToRow(PlatformProfile profile) => new()

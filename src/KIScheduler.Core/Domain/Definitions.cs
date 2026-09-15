@@ -97,10 +97,6 @@ public sealed class PlatformProfile
         IsDefault = isDefault;
         ShowUsageInStatusBar = showUsageInStatusBar;
 
-        if (isDefault && !Name.Equals(DefaultName, StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException($"Das Standardprofil muss den Namen '{DefaultName}' tragen.", nameof(name));
-        if (!isDefault && Name.Equals(DefaultName, StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException($"Der Name '{DefaultName}' ist dem Standardprofil vorbehalten.", nameof(name));
     }
 
     public PlatformProfileId Id { get; }

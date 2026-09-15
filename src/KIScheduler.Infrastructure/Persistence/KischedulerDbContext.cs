@@ -75,8 +75,6 @@ public sealed class KischedulerDbContext(DbContextOptions<KischedulerDbContext> 
             entity.HasIndex(x => new { x.PlatformId, x.DisplayName }).IsUnique().HasFilter("\"Enabled\" = 1");
             entity.HasIndex(x => x.PlatformId).IsUnique().HasFilter("\"IsDefault\" = 1 AND \"Enabled\" = 1");
             entity.HasOne<PlatformRow>().WithMany().HasForeignKey(x => x.PlatformId).OnDelete(DeleteBehavior.Restrict);
-            entity.ToTable(table => table.HasCheckConstraint("CK_PlatformProfiles_DefaultName",
-                "(IsDefault = 1 AND lower(Name) = 'default') OR (IsDefault = 0 AND lower(Name) <> 'default')"));
         });
         modelBuilder.Entity<UsagePolicyRow>(entity =>
         {

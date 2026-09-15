@@ -292,26 +292,23 @@ public sealed class SchedulerUiService(
         if (!platform.Enabled && profile.Enabled)
             throw new InvalidOperationException("Ein Profil einer deaktivierten Plattform kann nicht aktiviert werden.");
 
-        var currentDefault = await profiles.GetDefaultAsync(profile.PlatformId, cancellationToken).ConfigureAwait(false);
-        if (!profile.IsDefault || currentDefault is null || currentDefault.Id == profile.Id)
-        {
-            await profiles.SaveAsync(profile, cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        // Die Repository-Regeln verhindern zwei Standards. Zuerst wird der
-        // Ersatz als normales Profil gespeichert, dann der alte Standard
-        // deaktiviert und anschließend der Ersatz zum Standard gemacht.
-        var existing = await profiles.GetAsync(profile.Id, cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException("Ein neues Profil kann nicht direkt zum Standardprofil gemacht werden.");
-        if (existing.IsDefault)
-            throw new InvalidOperationException("Das ausgewählte Ersatzprofil ist bereits als Standardprofil markiert.");
-        var ordinary = new PlatformProfile(profile.Id, profile.PlatformId, existing.Name,
-            existing.DisplayName, profile.ConfigurationDirectory, profile.Enabled, isDefault: false,
-            profile.ShowUsageInStatusBar);
-        await profiles.SaveAsync(ordinary, cancellationToken).ConfigureAwait(false);
-        await profiles.DisableAsync(currentDefault.Id, cancellationToken).ConfigureAwait(false);
+        var existing = await profiles.GetAsync(profile.Id, cancellationToken).ConfigureAwait(false);
+        if (existing is not null && !existing.Name.Equals(profile.Name, StringComparison.Ordinal))
+            throw new InvalidOperationException("Der interne Name eines bestehenden Profils kann nicht geändert werden.");
+        if (existing is not null && existing.IsDefault != profile.IsDefault)
+            throw new InvalidOperationException("Bitte verwenden Sie zum Wechseln die Aktion 'Als Standard'.");
         await profiles.SaveAsync(profile, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task SetDefaultProfileAsync(PlatformProfileId profileId,
+        CancellationToken cancellationToken = default)
+    {
+        var profile = await profiles.GetAsync(profileId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException("Das Profil wurde nicht gefunden.");
+        if (!profile.Enabled)
+            throw new InvalidOperationException("Nur ein aktives Profil kann als Standard festgelegt werden.");
+        await profiles.SetDefaultAsync(profileId, cancellationToken).ConfigureAwait(false);
+        healthCache.Clear();
     }
 
     public async Task DisableProfileAsync(PlatformProfile profile, PlatformProfile? replacement = null,
@@ -330,11 +327,7 @@ public sealed class SchedulerUiService(
             if (replacement is null || replacement.Id == stored.Id || !replacement.Enabled
                 || !PlatformEquals(replacement.PlatformId, stored.PlatformId) || replacement.IsDefault)
                 throw new InvalidOperationException("Das Standardprofil kann nur nach Auswahl eines aktiven Ersatzprofils deaktiviert werden.");
-            await SaveProfileAsync(new PlatformProfile(replacement.Id, replacement.PlatformId,
-                PlatformProfile.DefaultName, PlatformProfile.DefaultDisplayName,
-                replacement.ConfigurationDirectory, true, isDefault: true,
-                replacement.ShowUsageInStatusBar), cancellationToken).ConfigureAwait(false);
-            return;
+            await profiles.SetDefaultAsync(replacement.Id, cancellationToken).ConfigureAwait(false);
         }
         await profiles.DisableAsync(stored.Id, cancellationToken).ConfigureAwait(false);
     }

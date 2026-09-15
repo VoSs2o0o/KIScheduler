@@ -209,10 +209,7 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasFilter("\"Enabled\" = 1");
 
-                    b.ToTable("PlatformProfiles", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_PlatformProfiles_DefaultName", "(IsDefault = 1 AND lower(Name) = 'default') OR (IsDefault = 0 AND lower(Name) <> 'default')");
-                        });
+                    b.ToTable("PlatformProfiles");
                 });
 
             modelBuilder.Entity("KIScheduler.Infrastructure.Persistence.PlatformUsageBlockRow", b =>

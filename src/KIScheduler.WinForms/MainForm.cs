@@ -515,6 +515,30 @@ public sealed class MainForm : Form
                 if (profileDialog.ShowDialog(this) == DialogResult.OK)
                     await UiAction(async () => { await ui.SaveProfileAsync(profileDialog.Value); await RefreshAsync(true); });
             }
+            else if (dialog.SelectedProfile is { } profileToMakeDefault
+                && dialog.RequestedAction == PlatformDialog.ProfileAction.AlsStandard)
+            {
+                if (profileToMakeDefault.IsDefault)
+                {
+                    MessageBox.Show(this, $"'{profileToMakeDefault.DisplayName}' ist bereits das Standardprofil.");
+                    continue;
+                }
+                if (!profileToMakeDefault.Enabled)
+                {
+                    MessageBox.Show(this, "Nur ein aktives Profil kann als Standard festgelegt werden.",
+                        "Standardprofil", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    continue;
+                }
+                if (MessageBox.Show(this,
+                        $"Profil '{profileToMakeDefault.DisplayName}' als Standard festlegen?",
+                        "Standardprofil ändern", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                    continue;
+                await UiAction(async () =>
+                {
+                    await ui.SetDefaultProfileAsync(profileToMakeDefault.Id);
+                    await RefreshAsync(true);
+                });
+            }
             else if (dialog.SelectedProfile is { } profile
                 && dialog.RequestedAction == PlatformDialog.ProfileAction.Pruefen)
             {

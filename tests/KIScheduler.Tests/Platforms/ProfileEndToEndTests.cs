@@ -187,6 +187,17 @@ public sealed class ProfileEndToEndTests
             return Task.CompletedTask;
         }
 
+        public Task SetDefaultAsync(PlatformProfileId id, CancellationToken cancellationToken = default)
+        {
+            if (!values.TryGetValue(id, out var selected) || !selected.Enabled)
+                throw new InvalidOperationException();
+            foreach (var profile in values.Values.Where(x => x.PlatformId == selected.PlatformId).ToList())
+                values[profile.Id] = new PlatformProfile(profile.Id, profile.PlatformId, profile.Name,
+                    profile.DisplayName, profile.ConfigurationDirectory, profile.Enabled,
+                    profile.Id == id, profile.ShowUsageInStatusBar);
+            return Task.CompletedTask;
+        }
+
         public Task<bool> DisableAsync(PlatformProfileId id, CancellationToken cancellationToken = default)
         {
             if (!values.TryGetValue(id, out PlatformProfile? profile)) return Task.FromResult(false);
