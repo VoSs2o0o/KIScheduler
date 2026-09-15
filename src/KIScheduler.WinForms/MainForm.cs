@@ -25,8 +25,11 @@ public sealed class MainForm : Form
     private readonly ToolStripStatusLabel workerState = new()
         { BorderSides = ToolStripStatusLabelBorderSides.All, Padding = new Padding(6, 2, 6, 2) };
     private readonly ToolStripStatusLabel usageState = new()
-        { BorderSides = ToolStripStatusLabelBorderSides.Left, Visible = false };
-    private readonly ToolStripStatusLabel runningState = new();
+        { BorderSides = ToolStripStatusLabelBorderSides.All, Padding = new Padding(6, 2, 6, 2),
+            Margin = new Padding(8, 0, 0, 0), BackColor = Color.AliceBlue, Visible = false };
+    private readonly ToolStripStatusLabel runningState = new()
+        { BorderSides = ToolStripStatusLabelBorderSides.All, Padding = new Padding(6, 2, 6, 2),
+            Margin = new Padding(8, 0, 0, 0), BackColor = Color.LemonChiffon };
     private readonly ToolStripButton priorityIncreaseButton = new() { Text = "Priorität +", Enabled = false };
     private readonly ToolStripButton priorityDecreaseButton = new() { Text = "Priorität −", Enabled = false };
     private readonly ToolStripButton itemPauseButton = new() { Text = "Pausieren/Fortsetzen", Enabled = false };
@@ -287,9 +290,14 @@ public sealed class MainForm : Form
                     p.Profile.DisplayName, p.Usage, x.Definition.Enabled, p.Profile.Enabled,
                     p.Profile.ShowUsageInStatusBar, p.UsageMessage)))
                 .ToList();
-            usageState.Text = ProfileUsageStatusFormatter.Format(usage, DateTimeOffset.UtcNow);
-            usageState.Visible = usageState.Text.Length > 0;
-            runningState.Text = $"Laufende Aufträge: {scheduler.RunningCount}";
+            var usageText = ProfileUsageStatusFormatter.Format(usage, DateTimeOffset.UtcNow);
+            usageState.Text = $"KI-Usage: {usageText}";
+            usageState.Visible = usageText.Length > 0;
+            var waitingCount = data.Queue.Count(row => row.Item.Status is
+                WorkItemStatus.InWarteschlange or WorkItemStatus.WartetAufUsage);
+            var busyCount = data.Queue.Count(row => row.Item.Status is
+                WorkItemStatus.Reserviert or WorkItemStatus.InBearbeitung);
+            runningState.Text = $"Auftragsstatus: wartet {waitingCount} · beschäftigt {busyCount}";
         }
         catch (Exception exception) { workerState.Text = $"Aktualisierung fehlgeschlagen: {exception.Message}"; }
         finally { refreshGate.Release(); }

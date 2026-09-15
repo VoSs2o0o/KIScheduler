@@ -1,4 +1,7 @@
 V1.30, 15.09.2026
+- Rename the default Claude and Codex profiles to ClaudeStd and CodexStd
+- Show only profile names in the status bar usage display
+- Show waiting and busy job counts in the status bar, with separate visual sections for AI usage and job status
 - Disable Codex and Claude on first launch when their executable cannot be found
 - Show usage in the status bar by default for enabled platforms
 - Bring the running KIScheduler window to the foreground when a second instance is opened

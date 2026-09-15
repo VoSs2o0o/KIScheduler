@@ -14,7 +14,7 @@ public static class ProfileUsageStatusFormatter
         return string.Join("  |  ", profiles
             .Where(profile => profile.PlatformEnabled && profile.ProfileEnabled && profile.ShowUsageInStatusBar)
             .Select(profile =>
-                $"{profile.PlatformId.Value}/{profile.ProfileDisplayName}: "
+                $"{profile.ProfileDisplayName}: "
                 + (profile.PlatformId.Value.Equals("claude", StringComparison.OrdinalIgnoreCase)
                     ? FormatClaudeCost(profile.UsageMessage)
                     : UsageStatusFormatter.Format(profile.Usage, nowUtc))));

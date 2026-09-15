@@ -391,6 +391,8 @@ public sealed class SqlitePersistenceTests
         Assert.AreEqual(2, profiles.Count);
         Assert.IsTrue(profiles.All(x => x.IsDefault && x.Name == PlatformProfile.DefaultName));
         var codexProfile = profiles.Single(x => x.PlatformId.Value == "codex");
+        Assert.AreEqual("CodexStd", codexProfile.DisplayName);
+        Assert.AreEqual("ClaudeStd", profiles.Single(x => x.PlatformId.Value == "claude").DisplayName);
         Assert.IsTrue(codexProfile.ShowUsageInStatusBar);
         Assert.AreEqual(Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE")!, ".codex"),
             codexProfile.ConfigurationDirectory);

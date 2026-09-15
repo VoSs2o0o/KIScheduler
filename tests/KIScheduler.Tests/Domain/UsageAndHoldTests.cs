@@ -59,21 +59,21 @@ public sealed class UsageAndHoldTests
             [new UsageWindow("session", new UsagePercent(34), null, "command", Now, UsageQuality.Aktuell)]);
 
         Assert.AreEqual(string.Empty, ProfileUsageStatusFormatter.Format([], Now));
-        Assert.AreEqual("codex/Standard: 12%", ProfileUsageStatusFormatter.Format(
-            [new(new("codex"), "Standard", codexUsage, true, true, true)], Now));
-        Assert.AreEqual("codex/Standard: 12%  |  claude/claude2: Total cost: $0.0000",
+        Assert.AreEqual("CodexStd: 12%", ProfileUsageStatusFormatter.Format(
+            [new(new("codex"), "CodexStd", codexUsage, true, true, true)], Now));
+        Assert.AreEqual("CodexStd: 12%  |  claude2: Total cost: $0.0000",
             ProfileUsageStatusFormatter.Format(
             [
-                new(new("codex"), "Standard", codexUsage, true, true, true),
+                new(new("codex"), "CodexStd", codexUsage, true, true, true),
                 new(new("codex"), "ausgeblendet", codexUsage, true, true, false),
                 new(new("claude"), "deaktiviert", claudeUsage, true, false, true),
                 new(new("claude"), "Plattform aus", claudeUsage, false, true, true),
                 new(new("claude"), "claude2", claudeUsage, true, true, true,
                     "Free account: usage assumed at 100%. | Total cost: $0.0000")
             ], Now));
-        Assert.AreEqual("claude/Standard: Total cost: unbekannt",
+        Assert.AreEqual("ClaudeStd: Total cost: unbekannt",
             ProfileUsageStatusFormatter.Format(
-                [new(new("claude"), "Standard", claudeUsage, true, true, true)], Now));
+                [new(new("claude"), "ClaudeStd", claudeUsage, true, true, true)], Now));
     }
 
     [TestMethod]

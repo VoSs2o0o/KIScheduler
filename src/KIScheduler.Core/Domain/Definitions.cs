@@ -123,7 +123,12 @@ public sealed class PlatformProfile
             : platformId.Value.Equals("claude", StringComparison.OrdinalIgnoreCase)
                 ? ".claude"
                 : $".{platformId.Value}";
-        return new PlatformProfile(id, platformId, DefaultName, DefaultDisplayName,
+        var displayName = platformId.Value.Equals("codex", StringComparison.OrdinalIgnoreCase)
+            ? "CodexStd"
+            : platformId.Value.Equals("claude", StringComparison.OrdinalIgnoreCase)
+                ? "ClaudeStd"
+                : DefaultDisplayName;
+        return new PlatformProfile(id, platformId, DefaultName, displayName,
             Path.Combine(userProfileDirectory, providerDirectory), isDefault: true,
             showUsageInStatusBar: showUsageInStatusBar);
     }

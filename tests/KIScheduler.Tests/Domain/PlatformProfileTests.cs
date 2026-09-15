@@ -29,7 +29,8 @@ public sealed class PlatformProfileTests
             Assert.AreEqual(Path.TrimEndingDirectorySeparator(Path.GetFullPath(
                 Path.Combine(userProfile, ".claude"))), claude.ConfigurationDirectory);
             Assert.AreEqual(PlatformProfile.DefaultName, codex.Name);
-            Assert.AreEqual(PlatformProfile.DefaultDisplayName, codex.DisplayName);
+            Assert.AreEqual("CodexStd", codex.DisplayName);
+            Assert.AreEqual("ClaudeStd", claude.DisplayName);
         }
         finally
         {
