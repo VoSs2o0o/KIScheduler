@@ -181,6 +181,7 @@ public sealed class WorkItemRow
     public string? CommitMessage { get; set; }
     public Guid? ProjectId { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
+    public DateTimeOffset? ScheduledStartAtUtc { get; set; }
     public DateTimeOffset? FirstAttemptStartedAtUtc { get; set; }
     public bool HasExecutionStarted { get; set; }
     public int Status { get; set; }

@@ -53,6 +53,16 @@ beispielsweise `KISCHEDULER_Runtime__DataDirectory`; Kommandozeilenwerte haben d
 Bei Auto-Commit muss das Repository vor dem Start sauber sein. KIScheduler wechselt weder Branch noch
 Worktree automatisch und erzeugt keinen leeren Commit.
 
+### Optionale Ausführungszeit
+
+Im Auftragsdialog kann über **Start festlegen** ein Datum und eine lokale Uhrzeit vorgegeben werden.
+Ohne Häkchen ist der Auftrag sofort startberechtigt. Mit Häkchen bleiben Datum und Uhrzeit zunächst
+auf heute beziehungsweise aktuell plus eine Stunde vorbelegt. **H+1** verschiebt die eingestellte
+Zeit um eine Stunde. **5HSlot+1** verwendet beim gewählten Profil die bekannte Resetzeit des
+kommenden 5-Stunden-Usage-Fensters plus eine Minute; fehlt diese Information, muss die Usage zuerst
+aktualisiert werden. Erst ab der geplanten Zeit bewertet der Scheduler Usage, Priorität, Holds und
+die übrigen Startbedingungen.
+
 ## Plattformprofile
 
 Über **Plattformen & Usage** und **Plattform und Profile verwalten** lassen sich mehrere getrennte

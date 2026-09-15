@@ -130,6 +130,7 @@ public sealed class SchedulerEngine : ISchedulerEngine
             if (paused || stopped) return 0;
             var now = clock.UtcNow;
             var candidates = await workItems.ListByStatusAsync(DueStatuses, cancellationToken).ConfigureAwait(false);
+            candidates = candidates.Where(item => item.IsScheduledStartDue(now)).ToList();
             candidates = await FilterRetryBackoffAsync(candidates, now, cancellationToken).ConfigureAwait(false);
             if (candidates.Count == 0) return 0;
 

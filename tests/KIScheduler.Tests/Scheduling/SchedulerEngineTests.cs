@@ -41,6 +41,30 @@ public sealed class SchedulerEngineTests
     }
 
     [TestMethod]
+    public async Task ScheduledWorkIsIgnoredUntilItsStartTimeAndThenUsesNormalCriteria()
+    {
+        await using var fixture = await SchedulerFixture.CreateAsync("codex");
+        var item = await fixture.AddWorkItemAsync("codex", await fixture.AddProjectAsync("scheduled"), 50);
+        item.ChangeScheduledStart(fixture.Clock.UtcNow.AddHours(1));
+        await fixture.WorkItems.SaveAsync(item);
+        var readsBefore = fixture.UsageReadCount("codex");
+
+        Assert.AreEqual(0, await fixture.Engine.RunCycleAsync());
+        Assert.AreEqual(readsBefore, fixture.UsageReadCount("codex"));
+        Assert.AreEqual(0, fixture.Platform("codex").Requests.Count);
+        Assert.AreEqual(WorkItemStatus.InWarteschlange, (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+
+        fixture.Clock.Advance(TimeSpan.FromHours(1));
+        fixture.SetUsage("codex", 20);
+        Assert.AreEqual(1, await fixture.Engine.RunCycleAsync());
+        await fixture.Engine.WaitForIdleAsync();
+
+        Assert.AreEqual(1, fixture.Platform("codex").Requests.Count);
+        Assert.AreEqual(WorkItemStatus.TechnischErfolgreich,
+            (await fixture.WorkItems.GetAsync(item.Id))!.Status);
+    }
+
+    [TestMethod]
     public async Task DifferentPlatformsCanRunInParallelInDifferentProjects()
     {
         await using var fixture = await SchedulerFixture.CreateAsync("codex", "claude");

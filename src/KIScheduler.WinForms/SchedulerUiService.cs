@@ -9,7 +9,7 @@ namespace KIScheduler.WinForms;
 
 public sealed record WorkItemEditModel(string Title, int Priority, string PlatformId, string ModelId,
     string Effort, string PromptPath, bool AutoCommit, string? CommitMessage, ProjectId? ProjectId = null,
-    PlatformProfileId? ProfileId = null);
+    PlatformProfileId? ProfileId = null, DateTimeOffset? ScheduledStartAtUtc = null);
 
 public sealed record ProfileRow(PlatformProfile Profile, PlatformHealth Health, UsageSnapshot? Usage,
     string? UsageMessage);
@@ -93,7 +93,7 @@ public sealed class SchedulerUiService(
                 : profile is null ? "Plattformprofil fehlt"
                 : !PlatformEquals(profile.PlatformId, item.PlatformId) ? "Plattformprofil gehört zu einer anderen Plattform"
                 : !profile.Enabled ? "Plattformprofil deaktiviert"
-                : LatestBlockingReason(item, held, platformBlocksTask.Result, snapshot);
+                : LatestBlockingReason(item, held, platformBlocksTask.Result, snapshot, clock.UtcNow);
             return new QueueRow(item, profile?.DisplayName ?? item.PlatformProfileId.ToString(), project, usage,
                 item.GetDisplayStatus(held).ToString(), reason);
         })).ConfigureAwait(false);
@@ -139,7 +139,7 @@ public sealed class SchedulerUiService(
         {
             item = new WorkItem(WorkItemId.New(), model.Title, new WorkItemPriority(model.Priority),
                 platformId, platformProfile.Id, modelId, effort, promptPath, model.AutoCommit, clock.UtcNow, project.Id,
-                model.CommitMessage);
+                model.CommitMessage, model.ScheduledStartAtUtc);
             item.TransitionTo(WorkItemStatus.InWarteschlange);
         }
         else
@@ -147,6 +147,7 @@ public sealed class SchedulerUiService(
             existing.ChangeTitle(model.Title);
             existing.ChangePlanning(new WorkItemPriority(model.Priority), promptPath, model.AutoCommit, project.Id);
             existing.ChangeCommitMessage(model.CommitMessage);
+            existing.ChangeScheduledStart(model.ScheduledStartAtUtc);
             if (!existing.HasExecutionStarted || existing.PlatformId != platformId
                 || existing.ModelId != modelId || existing.Effort != effort)
                 existing.ChangeExecutionConfiguration(platformId, platformProfile.Id, modelId, effort);
@@ -459,8 +460,10 @@ public sealed class SchedulerUiService(
     };
 
     private static string LatestBlockingReason(WorkItem item, bool held,
-        IReadOnlyList<PlatformUsageBlock> platformBlocks, UsageSnapshot? snapshot)
+        IReadOnlyList<PlatformUsageBlock> platformBlocks, UsageSnapshot? snapshot, DateTimeOffset nowUtc)
     {
+        if (!item.IsScheduledStartDue(nowUtc))
+            return $"Ausführung geplant ab {item.ScheduledStartAtUtc!.Value.ToLocalTime():g}";
         if (held) return "Projekt-Hold durch einen möglicherweise teilweise ausgeführten Auftrag";
         var block = platformBlocks.FirstOrDefault(x => x.PlatformProfileId == item.PlatformProfileId);
         if (block is not null) return block.Reason;

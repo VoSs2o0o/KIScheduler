@@ -4,7 +4,8 @@ public sealed class WorkItem
 {
     public WorkItem(WorkItemId id, string title, WorkItemPriority priority, PlatformId platformId,
         PlatformProfileId platformProfileId, ModelId modelId, EffortLevel effort, PromptPath promptPath, bool autoCommit,
-        DateTimeOffset createdAtUtc, ProjectId? projectId = null, string? commitMessage = null)
+        DateTimeOffset createdAtUtc, ProjectId? projectId = null, string? commitMessage = null,
+        DateTimeOffset? scheduledStartAtUtc = null)
     {
         DomainValidation.Id(id.Value, nameof(id));
         Id = id;
@@ -19,6 +20,9 @@ public sealed class WorkItem
         AutoCommit = autoCommit;
         CommitMessage = NormalizeCommitMessage(commitMessage);
         CreatedAtUtc = DomainValidation.Utc(createdAtUtc, nameof(createdAtUtc));
+        ScheduledStartAtUtc = scheduledStartAtUtc is null
+            ? null
+            : DomainValidation.Utc(scheduledStartAtUtc.Value, nameof(scheduledStartAtUtc));
         ProjectId = projectId;
         Status = WorkItemStatus.Entwurf;
     }
@@ -35,6 +39,7 @@ public sealed class WorkItem
     public string? CommitMessage { get; private set; }
     public ProjectId? ProjectId { get; private set; }
     public DateTimeOffset CreatedAtUtc { get; }
+    public DateTimeOffset? ScheduledStartAtUtc { get; private set; }
     public DateTimeOffset? FirstAttemptStartedAtUtc { get; private set; }
     public bool HasExecutionStarted { get; private set; }
     public bool CanEdit => !HasExecutionStarted && Status is WorkItemStatus.Entwurf
@@ -47,7 +52,7 @@ public sealed class WorkItem
         PlatformId platformId, PlatformProfileId platformProfileId, ModelId modelId, EffortLevel effort, PromptPath promptPath,
         bool autoCommit, DateTimeOffset createdAtUtc, ProjectId? projectId, WorkItemStatus status,
         DateTimeOffset? firstAttemptStartedAtUtc, bool hasExecutionStarted, int normalRetryCount,
-        string? commitMessage = null)
+        string? commitMessage = null, DateTimeOffset? scheduledStartAtUtc = null)
     {
         if (firstAttemptStartedAtUtc.HasValue)
         {
@@ -60,7 +65,7 @@ public sealed class WorkItem
         }
 
         var item = new WorkItem(id, title, priority, platformId, platformProfileId, modelId, effort, promptPath,
-            autoCommit, createdAtUtc, projectId, commitMessage)
+            autoCommit, createdAtUtc, projectId, commitMessage, scheduledStartAtUtc)
         {
             Status = status,
             FirstAttemptStartedAtUtc = firstAttemptStartedAtUtc,
@@ -154,6 +159,17 @@ public sealed class WorkItem
         EnsureCanEdit();
         CommitMessage = NormalizeCommitMessage(commitMessage);
     }
+
+    public void ChangeScheduledStart(DateTimeOffset? scheduledStartAtUtc)
+    {
+        EnsureCanEdit();
+        ScheduledStartAtUtc = scheduledStartAtUtc is null
+            ? null
+            : DomainValidation.Utc(scheduledStartAtUtc.Value, nameof(scheduledStartAtUtc));
+    }
+
+    public bool IsScheduledStartDue(DateTimeOffset nowUtc) =>
+        ScheduledStartAtUtc is null || ScheduledStartAtUtc <= DomainValidation.Utc(nowUtc, nameof(nowUtc));
 
     public string ResolveCommitMessage()
     {

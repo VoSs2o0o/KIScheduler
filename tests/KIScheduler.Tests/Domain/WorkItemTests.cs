@@ -55,6 +55,23 @@ public sealed class WorkItemTests
     }
 
     [TestMethod]
+    public void OptionalScheduledStartCanBeChangedBeforeExecution()
+    {
+        var item = CreateWorkItem();
+        var scheduledStart = Now.AddHours(2);
+
+        item.ChangeScheduledStart(scheduledStart);
+
+        Assert.AreEqual(scheduledStart, item.ScheduledStartAtUtc);
+        Assert.IsFalse(item.IsScheduledStartDue(scheduledStart.AddTicks(-1)));
+        Assert.IsTrue(item.IsScheduledStartDue(scheduledStart));
+        item.ChangeScheduledStart(null);
+        Assert.IsTrue(item.IsScheduledStartDue(Now));
+        Assert.ThrowsException<ArgumentException>(() =>
+            item.ChangeScheduledStart(scheduledStart.ToOffset(TimeSpan.FromHours(2))));
+    }
+
+    [TestMethod]
     public void PlatformAndModelAreFrozenAfterFirstAttemptStarts()
     {
         var item = CreateWorkItem();
@@ -80,6 +97,7 @@ public sealed class WorkItemTests
         Assert.ThrowsException<InvalidOperationException>(() => item.ChangePlanning(
             new WorkItemPriority(60), new PromptPath("docs/changed.md"), false, ProjectId.New()));
         Assert.ThrowsException<InvalidOperationException>(() => item.ChangeCommitMessage("Neue Nachricht"));
+        Assert.ThrowsException<InvalidOperationException>(() => item.ChangeScheduledStart(Now.AddHours(1)));
 
         item.TransitionTo(WorkItemStatus.InBearbeitung);
         item.MarkAttemptStarted(Now.AddMinutes(1));

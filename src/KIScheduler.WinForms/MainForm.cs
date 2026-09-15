@@ -93,7 +93,8 @@ public sealed class MainForm : Form
             TextColumn("Priorität", "Priority", 75), TextColumn("Plattform", "Platform", 85),
             TextColumn("Profil", "Profile", 150),
             TextColumn("Modell", "Model", 135), TextColumn("Effort", "Effort", 70),
-            TextColumn("Projekt", "Project", 150), TextColumn("Usage", "Usage", 190),
+            TextColumn("Projekt", "Project", 150), TextColumn("Geplanter Start", "ScheduledStart", 130),
+            TextColumn("Usage", "Usage", 190),
             TextColumn("Status", "Status", 150), TextColumn("Titel", "Title", 230),
             TextColumn("Begründung", "Reason", 340));
         var tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
@@ -281,12 +282,16 @@ public sealed class MainForm : Form
                 (term.Length == 0 || $"{x.Item.Title} {x.Project} {x.Reason}".Contains(term, StringComparison.CurrentCultureIgnoreCase))))
             {
                 var index = queue.Rows.Add(row.Item.Priority.Value, row.Item.PlatformId.Value, row.Profile, row.Item.ModelId.Value,
-                    row.Item.Effort.Value, row.Project, row.Usage, row.Status, row.Item.Title, row.Reason);
+                    row.Item.Effort.Value, row.Project,
+                    row.Item.ScheduledStartAtUtc?.ToLocalTime().ToString("g") ?? "—",
+                    row.Usage, row.Status, row.Item.Title, row.Reason);
                 queue.Rows[index].Tag = row.Item;
                 if (row.Item.Id == selected) selectedRow = queue.Rows[index];
                 if (row.Item.Status == WorkItemStatus.WartetAufUsage
                     || row.Status == WorkItemDisplayStatus.ProjektAngehalten.ToString())
                     queue.Rows[index].DefaultCellStyle.BackColor = Color.MistyRose;
+                else if (!row.Item.IsScheduledStartDue(DateTimeOffset.UtcNow))
+                    queue.Rows[index].DefaultCellStyle.BackColor = Color.LemonChiffon;
             }
             if (selectedRow is not null)
             {
@@ -444,7 +449,7 @@ public sealed class MainForm : Form
     private Task DuplicateSelectedAsync() => SelectedItem() is { } item
         ? EditWorkItemAsync(item, duplicate: true) : Task.CompletedTask;
     private async Task ChangePriorityAsync(int delta)
-    { var item = SelectedItem(); if (item is null || data is null || !item.CanEdit) return; var projectRoot = item.ProjectId is { } id && data.Projects.TryGetValue(id, out var p) ? p.RootPath : null; var prompt = projectRoot is null ? item.PromptPath.Value : Path.GetFullPath(item.PromptPath.Value, projectRoot); var model = new WorkItemEditModel(item.Title, Math.Clamp(item.Priority.Value + delta, 0, 100), item.PlatformId.Value, item.ModelId.Value, item.Effort.Value, prompt, item.AutoCommit, item.CommitMessage, item.ProjectId, item.PlatformProfileId); await UiAction(async () => { await ui.SaveWorkItemAsync(model, item); await RefreshAsync(); }); }
+    { var item = SelectedItem(); if (item is null || data is null || !item.CanEdit) return; var projectRoot = item.ProjectId is { } id && data.Projects.TryGetValue(id, out var p) ? p.RootPath : null; var prompt = projectRoot is null ? item.PromptPath.Value : Path.GetFullPath(item.PromptPath.Value, projectRoot); var model = new WorkItemEditModel(item.Title, Math.Clamp(item.Priority.Value + delta, 0, 100), item.PlatformId.Value, item.ModelId.Value, item.Effort.Value, prompt, item.AutoCommit, item.CommitMessage, item.ProjectId, item.PlatformProfileId, item.ScheduledStartAtUtc); await UiAction(async () => { await ui.SaveWorkItemAsync(model, item); await RefreshAsync(); }); }
     private async Task ToggleItemPauseAsync() { var item = SelectedItem(); if (item is null) return; await UiAction(async () => { await ui.SetPausedAsync(item, item.Status != WorkItemStatus.Pausiert); await RefreshAsync(); }); }
     private async Task CancelSelectedAsync() { var item = SelectedItem(); if (item is null || MessageBox.Show(this, $"Auftrag '{item.Title}' kontrolliert abbrechen?", "Abbrechen bestätigen", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return; await UiAction(async () => { if (!await ui.CancelAsync(item)) throw new InvalidOperationException("Der Auftrag kann nicht abgebrochen werden."); await RefreshAsync(); }); }
     private async Task RequeueSelectedAsync()

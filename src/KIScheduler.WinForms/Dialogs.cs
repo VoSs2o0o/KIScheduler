@@ -15,6 +15,17 @@ internal sealed class WorkItemDialog : Form
     private readonly TextBox prompt = new() { Dock = DockStyle.Fill, ReadOnly = true };
     private readonly CheckBox autoCommit = new() { Text = "Nach Erfolg automatisch committen", AutoSize = true };
     private readonly TextBox commitMessage = new();
+    private readonly CheckBox scheduleStart = new() { Text = "Start festlegen", AutoSize = true };
+    private readonly DateTimePicker scheduleDate = new() { Format = DateTimePickerFormat.Short, Width = 110 };
+    private readonly DateTimePicker scheduleTime = new()
+    {
+        Format = DateTimePickerFormat.Custom,
+        CustomFormat = "HH:mm",
+        ShowUpDown = true,
+        Width = 70
+    };
+    private readonly Button fiveHourSlotButton = new() { Text = "5HSlot+1", AutoSize = true };
+    private readonly Button hourPlusButton = new() { Text = "H+1", AutoSize = true };
 
     public WorkItemDialog(IReadOnlyList<PlatformRow> platforms, WorkItem? item,
         IReadOnlyDictionary<ProjectId, ProjectDefinition> projects, bool duplicate = false)
@@ -23,10 +34,25 @@ internal sealed class WorkItemDialog : Form
         var readOnly = item is not null && !duplicate && !item.CanEdit;
         Text = readOnly ? "Auftrag anzeigen" : duplicate ? "Auftrag duplizieren"
             : item is null ? "Auftrag anlegen" : "Auftrag bearbeiten";
-        Width = 740; Height = 420; StartPosition = FormStartPosition.CenterParent;
+        Width = 780; Height = 470; StartPosition = FormStartPosition.CenterParent;
         var form = CreateLayout();
         AddRow(form, "Titel", title); AddRow(form, "Priorität", priority); AddRow(form, "Plattform", platform);
         AddRow(form, "Profil", profile); AddRow(form, "Modell", model); AddRow(form, "Effort", effort);
+        var defaultStart = DateTime.Now.AddHours(1);
+        defaultStart = new DateTime(defaultStart.Year, defaultStart.Month, defaultStart.Day,
+            defaultStart.Hour, defaultStart.Minute, 0);
+        SetScheduledLocalTime(defaultStart);
+        scheduleStart.CheckedChanged += (_, _) => UpdateScheduleControls();
+        fiveHourSlotButton.Click += (_, _) => SetToNextFiveHourSlot();
+        hourPlusButton.Click += (_, _) =>
+        {
+            scheduleStart.Checked = true;
+            SetScheduledLocalTime(GetScheduledLocalTime().AddHours(1));
+        };
+        var schedulePanel = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Dock = DockStyle.Fill };
+        schedulePanel.Controls.AddRange([scheduleStart, scheduleDate, scheduleTime, fiveHourSlotButton, hourPlusButton]);
+        AddRow(form, "Ausführungszeit", schedulePanel);
+        UpdateScheduleControls();
         foreach (var value in projects.Values.OrderBy(x => x.Name)) project.Items.Add(new ProjectOption(value));
         project.DropDownWidth = 520;
         project.SelectedIndexChanged += (_, _) =>
@@ -82,6 +108,11 @@ internal sealed class WorkItemDialog : Form
                 .FirstOrDefault(x => x.Profile.Id == item.PlatformProfileId);
             LoadModels(); model.SelectedItem = item.ModelId.Value; LoadEfforts(); effort.SelectedItem = item.Effort.Value;
             autoCommit.Checked = item.AutoCommit; commitMessage.Text = item.CommitMessage ?? "";
+            if (item.ScheduledStartAtUtc is { } scheduledStartAtUtc)
+            {
+                scheduleStart.Checked = true;
+                SetScheduledLocalTime(scheduledStartAtUtc.ToLocalTime().DateTime);
+            }
             var knownProject = item.ProjectId is { } id && projects.TryGetValue(id, out var project) ? project : null;
             if (knownProject is not null)
                 this.project.SelectedItem = this.project.Items.Cast<ProjectOption>()
@@ -95,11 +126,56 @@ internal sealed class WorkItemDialog : Form
 
     public WorkItemEditModel Value => new(title.Text.Trim(), (int)priority.Value, SelectedPlatform?.Definition.Id.Value ?? "",
         model.Text, effort.Text, prompt.Text.Trim(), autoCommit.Checked, commitMessage.Text.Trim(),
-        SelectedProject?.Id, SelectedProfile?.Id);
+        SelectedProject?.Id, SelectedProfile?.Id, GetScheduledStartUtc());
 
     private ProjectDefinition? SelectedProject => (project.SelectedItem as ProjectOption)?.Definition;
     private PlatformRow? SelectedPlatform => (platform.SelectedItem as PlatformOption)?.Row;
     private PlatformProfile? SelectedProfile => (profile.SelectedItem as ProfileOption)?.Profile;
+    private ProfileRow? SelectedProfileRow => (profile.SelectedItem as ProfileOption)?.Row;
+
+    private DateTime GetScheduledLocalTime() => scheduleDate.Value.Date + scheduleTime.Value.TimeOfDay;
+
+    private DateTimeOffset? GetScheduledStartUtc()
+    {
+        if (!scheduleStart.Checked) return null;
+        var local = DateTime.SpecifyKind(GetScheduledLocalTime(), DateTimeKind.Unspecified);
+        if (TimeZoneInfo.Local.IsInvalidTime(local))
+            throw new InvalidOperationException("Die gewählte lokale Uhrzeit existiert wegen der Zeitumstellung nicht.");
+        return new DateTimeOffset(TimeZoneInfo.ConvertTimeToUtc(local, TimeZoneInfo.Local));
+    }
+
+    private void SetScheduledLocalTime(DateTime local)
+    {
+        scheduleDate.Value = local.Date;
+        scheduleTime.Value = local;
+    }
+
+    private void UpdateScheduleControls()
+    {
+        scheduleDate.Enabled = scheduleStart.Checked;
+        scheduleTime.Enabled = scheduleStart.Checked;
+        fiveHourSlotButton.Enabled = scheduleStart.Checked;
+        hourPlusButton.Enabled = scheduleStart.Checked;
+    }
+
+    private void SetToNextFiveHourSlot()
+    {
+        DateTimeOffset? nextReset = SelectedProfileRow?.Usage?.Windows
+            .Where(window => window.WindowDuration == TimeSpan.FromHours(5)
+                && window.ResetAtUtc > DateTimeOffset.UtcNow)
+            .Select(window => (DateTimeOffset?)window.ResetAtUtc!.Value)
+            .OrderBy(value => value)
+            .FirstOrDefault();
+        if (nextReset is null)
+        {
+            MessageBox.Show(this,
+                "Für das gewählte Profil ist keine kommende Resetzeit eines 5-Stunden-Slots bekannt. Bitte Usage aktualisieren.");
+            return;
+        }
+
+        scheduleStart.Checked = true;
+        SetScheduledLocalTime(nextReset.Value.AddMinutes(1).ToLocalTime().DateTime);
+    }
 
     private bool PromptBelongsToSelectedProject(string path) =>
         SelectedProject is { } selected && IsPathWithinRoot(path, selected.RootPath);
@@ -144,6 +220,15 @@ internal sealed class WorkItemDialog : Form
                 "Bitte Titel, feste Ausführungsauswahl, ein Projekt und eine Prompt-Datei innerhalb dieses Projekts angeben.");
             return;
         }
+        try
+        {
+            _ = GetScheduledStartUtc();
+        }
+        catch (InvalidOperationException exception)
+        {
+            MessageBox.Show(this, exception.Message);
+            return;
+        }
         DialogResult = DialogResult.OK;
     }
 
@@ -176,7 +261,7 @@ internal sealed class WorkItemDialog : Form
                 .OrderByDescending(x => x.Profile.IsDefault).ThenBy(x => x.Profile.DisplayName)
             : Enumerable.Empty<ProfileRow>();
         foreach (var value in available)
-            profile.Items.Add(new ProfileOption(value.Profile));
+            profile.Items.Add(new ProfileOption(value));
         var selectedOption = profile.Items.Cast<ProfileOption>()
             .FirstOrDefault(x => selected is not null && x.Profile.Id == selected.Value)
             ?? profile.Items.Cast<ProfileOption>().FirstOrDefault(x => x.Profile.IsDefault);
@@ -188,8 +273,9 @@ internal sealed class WorkItemDialog : Form
         public override string ToString() => Row.Definition.Id.Value;
     }
 
-    private sealed record ProfileOption(PlatformProfile Profile)
+    private sealed record ProfileOption(ProfileRow Row)
     {
+        public PlatformProfile Profile => Row.Profile;
         public override string ToString() => Profile.DisplayName;
     }
 

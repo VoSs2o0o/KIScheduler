@@ -54,6 +54,7 @@ public sealed class SqlitePersistenceTests
         var history = new SqliteExecutionHistoryRepository(factory!);
         var item = CreateQueuedWorkItem();
         item.ChangeCommitMessage("AP9: persistierte Nachricht");
+        item.ChangeScheduledStart(DateTimeOffset.UtcNow.AddHours(2));
         await workItems.SaveAsync(item);
         var now = DateTimeOffset.UtcNow;
         var attempt = new ExecutionAttempt(ExecutionAttemptId.New(), item.Id, 1, item.PlatformId,
@@ -80,6 +81,7 @@ public sealed class SqlitePersistenceTests
         Assert.IsNotNull(restored);
         Assert.AreEqual(WorkItemStatus.InWarteschlange, restored.Status);
         Assert.AreEqual("AP9: persistierte Nachricht", restored.CommitMessage);
+        Assert.AreEqual(item.ScheduledStartAtUtc, restored.ScheduledStartAtUtc);
         Assert.AreEqual(2, attempts.Count);
         Assert.AreEqual("session-1", attempts[0].SessionId);
         Assert.IsTrue(attempts.All(x => x.PlatformProfileId == item.PlatformProfileId));
@@ -313,6 +315,21 @@ public sealed class SqlitePersistenceTests
             item.CommitMessage);
 
         await Assert.ThrowsExceptionAsync<InvalidOperationException>(() => repository.SaveAsync(changed));
+    }
+
+    [TestMethod]
+    public async Task LeaseCannotBeAcquiredBeforeScheduledStart()
+    {
+        var repository = new SqliteWorkItemRepository(factory!);
+        var now = DateTimeOffset.UtcNow;
+        var item = CreateQueuedWorkItem();
+        item.ChangeScheduledStart(now.AddHours(1));
+        await repository.SaveAsync(item);
+
+        Assert.IsNull(await repository.TryAcquireLeaseAsync(item.Id, item.PlatformProfileId, "worker-before",
+            now, TimeSpan.FromMinutes(1)));
+        Assert.IsNotNull(await repository.TryAcquireLeaseAsync(item.Id, item.PlatformProfileId, "worker-due",
+            now.AddHours(1), TimeSpan.FromMinutes(1)));
     }
 
     [TestMethod]

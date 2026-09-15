@@ -581,6 +581,9 @@ namespace KIScheduler.Infrastructure.Persistence.Migrations
                         .HasMaxLength(2048)
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTimeOffset?>("ScheduledStartAtUtc")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("Status")
                         .HasColumnType("INTEGER");
 

@@ -64,6 +64,7 @@ public sealed class SqliteWorkItemRepository(IDbContextFactory<KischedulerDbCont
                 WHERE Id = {workItemId.Value}
                   AND PlatformProfileId = {expectedPlatformProfileId.Value}
                   AND Status IN ({(int)WorkItemStatus.InWarteschlange}, {(int)WorkItemStatus.WartetAufUsage})
+                  AND (ScheduledStartAtUtc IS NULL OR ScheduledStartAtUtc <= {acquiredAtUtc})
                   AND NOT EXISTS (
                       SELECT 1
                       FROM SchedulerLeases AS lease
