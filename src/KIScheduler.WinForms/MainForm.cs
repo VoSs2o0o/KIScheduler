@@ -7,6 +7,8 @@ namespace KIScheduler.WinForms;
 
 public sealed class MainForm : Form
 {
+    private static readonly Image pauseIcon = UiIcons.Create(UiIcon.Pause, 64);
+    private static readonly Image playIcon = UiIcons.Create(UiIcon.Play, 64);
     private readonly SchedulerUiService ui;
     private readonly ISchedulerEngine scheduler;
     private readonly SchedulerOptions schedulerOptions;
@@ -109,31 +111,31 @@ public sealed class MainForm : Form
             TextColumn("Usage", "Usage", 190),
             TextColumn("Status", "Status", 150), TextColumn("Titel", "Title", 230),
             TextColumn("Begründung", "Reason", 340));
-        var tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
-        tools.Items.Add(Button("Neu", async () => await EditWorkItemAsync(null)));
-        tools.Items.Add(Button("Neues Projekt", async () => await CreateProjectAsync()));
-        tools.Items.Add(Button("Bearbeiten", async () => await EditSelectedAsync()));
-        tools.Items.Add(Button("Duplizieren", async () => await DuplicateSelectedAsync()));
+        var tools = Toolbar();
+        tools.Items.Add(Button("Neu", UiIcon.Add, async () => await EditWorkItemAsync(null)));
+        tools.Items.Add(Button("Neues Projekt", UiIcon.Project, async () => await CreateProjectAsync()));
+        tools.Items.Add(Button("Bearbeiten", UiIcon.Edit, async () => await EditSelectedAsync()));
+        tools.Items.Add(Button("Duplizieren", UiIcon.Duplicate, async () => await DuplicateSelectedAsync()));
         historyButton.Click += async (_, _) => await ShowSelectedHistoryAsync();
-        tools.Items.Add(historyButton);
+        tools.Items.Add(StyleButton(historyButton, UiIcon.History));
         tools.Items.Add(new ToolStripSeparator());
         priorityIncreaseButton.Click += async (_, _) => await ChangePriorityAsync(5);
         priorityDecreaseButton.Click += async (_, _) => await ChangePriorityAsync(-5);
-        tools.Items.Add(priorityIncreaseButton);
-        tools.Items.Add(priorityDecreaseButton);
+        tools.Items.Add(StyleButton(priorityIncreaseButton, UiIcon.PriorityUp));
+        tools.Items.Add(StyleButton(priorityDecreaseButton, UiIcon.PriorityDown));
         itemPauseButton.Click += async (_, _) => await ToggleItemPauseAsync();
         cancelButton.Click += async (_, _) => await CancelSelectedAsync();
         requeueButton.Click += async (_, _) => await RequeueSelectedAsync();
-        tools.Items.Add(itemPauseButton);
-        tools.Items.Add(cancelButton);
+        tools.Items.Add(StyleButton(itemPauseButton, UiIcon.Pause, "Pause/Weiter"));
+        tools.Items.Add(StyleButton(cancelButton, UiIcon.Cancel));
         humanReviewButton.Click += async (_, _) => await MarkSelectedForHumanReviewAsync();
-        tools.Items.Add(humanReviewButton);
-        tools.Items.Add(requeueButton);
+        tools.Items.Add(StyleButton(humanReviewButton, UiIcon.Review, "Prüfen"));
+        tools.Items.Add(StyleButton(requeueButton, UiIcon.Requeue, "Einreihen"));
         tools.Items.Add(new ToolStripSeparator());
-        tools.Items.Add(Button("Usage aktualisieren", async () => await RefreshAsync(true)));
+        tools.Items.Add(Button("Usage aktualisieren", UiIcon.Refresh, async () => await RefreshAsync(true)));
         schedulerPauseButton.Click += (_, _) => ToggleSchedulerPause();
         schedulerPauseButton.ToolTipText = "Pausiert neue Starts; bereits laufende Aufträge laufen kontrolliert weiter.";
-        tools.Items.Add(schedulerPauseButton);
+        tools.Items.Add(StyleButton(schedulerPauseButton, UiIcon.Pause, "Pausieren"));
         statusFilter.Items.Add("Alle Status");
         foreach (var value in Enum.GetValues<WorkItemDisplayStatus>()) statusFilter.Items.Add(value.ToString());
         statusFilter.SelectedIndex = 0;
@@ -150,9 +152,9 @@ public sealed class MainForm : Form
             TextColumn("Zustand", "Health", 130),
             TextColumn("Details", "Details", 260), TextColumn("Verbrauch und Reset", "Usage", 430),
             TextColumn("Wirksame Grenzwerte", "Limits", 400));
-        var tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
-        tools.Items.Add(Button("Jetzt prüfen", async () => await RefreshAsync(true)));
-        tools.Items.Add(Button("Plattform und Profile verwalten", async () => await EditPlatformAsync()));
+        var tools = Toolbar();
+        tools.Items.Add(Button("Jetzt prüfen", UiIcon.Refresh, async () => await RefreshAsync(true)));
+        tools.Items.Add(Button("Plattform und Profile verwalten", UiIcon.Platform, async () => await EditPlatformAsync()));
         return Page("Plattformen & Usage", platformGrid, tools);
     }
 
@@ -160,10 +162,10 @@ public sealed class MainForm : Form
     {
         projectGrid.Columns.AddRange(TextColumn("Name", "Name", 240),
             TextColumn("Projektroot", "Root", 650), TextColumn("Zielbranch", "Branch", 180));
-        var tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
-        tools.Items.Add(Button("Projekt anlegen", async () => await EditProjectAsync(null)));
-        tools.Items.Add(Button("Projekt bearbeiten", async () => await EditSelectedProjectAsync()));
-        tools.Items.Add(Button("Projekt löschen", async () => await DeleteSelectedProjectAsync()));
+        var tools = Toolbar();
+        tools.Items.Add(Button("Projekt anlegen", UiIcon.Project, async () => await EditProjectAsync(null)));
+        tools.Items.Add(Button("Projekt bearbeiten", UiIcon.Edit, async () => await EditSelectedProjectAsync()));
+        tools.Items.Add(Button("Projekt löschen", UiIcon.Delete, async () => await DeleteSelectedProjectAsync()));
         return Page("Projekte", projectGrid, tools);
     }
 
@@ -172,8 +174,8 @@ public sealed class MainForm : Form
         blockGrid.Columns.AddRange(TextColumn("Typ", "Type", 130), TextColumn("Plattform/Projekt", "Target", 180),
             TextColumn("Auslösender Auftrag", "Trigger", 230), TextColumn("Seit", "Since", 145),
             TextColumn("Freigaberegel", "Rule", 260), TextColumn("Ursache", "Reason", 450));
-        var tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
-        tools.Items.Add(Button("Projekt-Hold bewusst freigeben", async () => await ReleaseSelectedHoldAsync()));
+        var tools = Toolbar();
+        tools.Items.Add(Button("Projekt-Hold bewusst freigeben", UiIcon.Unlock, async () => await ReleaseSelectedHoldAsync()));
         return Page("Sperren", blockGrid, tools);
     }
 
@@ -186,9 +188,8 @@ public sealed class MainForm : Form
             TextColumn("Typ/Stream", "Type", 200), TextColumn("Meldung", "Message", 700));
         var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 220 };
         split.Panel1.Controls.Add(attemptsGrid); split.Panel2.Controls.Add(eventsGrid);
-        var tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
-        tools.Items.Add(new ToolStripLabel("Versuche und Ereignisse des markierten Auftrags"));
-        tools.Items.Add(Button("Fortsetzungsbefehl kopieren", CopyResumeCommand));
+        var tools = Toolbar();
+        tools.Items.Add(Button("Fortsetzungsbefehl kopieren", UiIcon.Copy, CopyResumeCommand));
         return Page("Historie", split, tools, reviewDetails);
     }
 
@@ -198,10 +199,10 @@ public sealed class MainForm : Form
             TextColumn("Tage", "Days", 210), TextColumn("Zeitraum", "Range", 130), TextColumn("Grenze", "Limit", 80),
             TextColumn("Endspurt", "Sprint", 170), TextColumn("Unbekannt", "Unknown", 100),
             TextColumn("Polling", "Polling", 100), TextColumn("Zeitzone", "Zone", 220));
-        var tools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden };
-        tools.Items.Add(Button("Regel hinzufügen", async () => await EditPolicyAsync(null)));
-        tools.Items.Add(Button("Regel bearbeiten", async () => await EditSelectedPolicyAsync()));
-        tools.Items.Add(Button("Regel entfernen", async () => await RemoveSelectedPolicyAsync()));
+        var tools = Toolbar();
+        tools.Items.Add(Button("Regel hinzufügen", UiIcon.Policy, async () => await EditPolicyAsync(null)));
+        tools.Items.Add(Button("Regel bearbeiten", UiIcon.Edit, async () => await EditSelectedPolicyAsync()));
+        tools.Items.Add(Button("Regel entfernen", UiIcon.Delete, async () => await RemoveSelectedPolicyAsync()));
         return Page("Usage-Regeln", policyGrid, tools);
     }
 
@@ -236,8 +237,9 @@ public sealed class MainForm : Form
             return box;
         }
 
-        AddWide(new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold),
-            Text = "Laufzeit- und Provider-Einstellungen", Margin = new Padding(6, 4, 6, 8) }, 0);
+        var runtimeHeading = new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold),
+            Text = "Laufzeit- und Provider-Einstellungen", Margin = new Padding(6, 4, 6, 8) };
+        AddWide(runtimeHeading, 0);
         AddWide(new Label { AutoSize = true, Text =
             "Änderungen werden validiert und gespeichert. Die Laufzeit- und Provider-Einstellungen gelten nach dem nächsten Start.",
             Margin = new Padding(6, 0, 6, 12) }, 1);
@@ -262,8 +264,9 @@ public sealed class MainForm : Form
         minimizeField.Controls.Add(minimizeTarget, 0, 1);
         content.Controls.Add(minimizeField, 0, 4);
 
-        AddWide(new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold),
-            Text = "Claude-Ausgabe erkennen", Margin = new Padding(6, 16, 6, 4) }, 5);
+        var claudeHeading = new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold),
+            Text = "Claude-Ausgabe erkennen", Margin = new Padding(6, 16, 6, 4) };
+        AddWide(claudeHeading, 5);
         var regex = AddField("Claude Session-RegEx (5h-Kontingent)",
             configuration["Claude:Usage:Pattern"] ?? ClaudeUsageOptions.DefaultPattern, 0, 6, 3, true);
         var weeklyRegex = AddField("Claude Wochen-RegEx", configuration["Claude:Usage:WeeklyPattern"]
@@ -276,8 +279,11 @@ public sealed class MainForm : Form
         AddWide(new Label { AutoSize = true, Text =
             "Der Kontotyp-RegEx erkennt Hinweise wie 'free account', 'free plan' oder 'free tier'. Für erkannte Konten ohne Abo wird das Kontingent als verbraucht angezeigt.",
             Margin = new Padding(6, 4, 6, 8) }, 10);
-        var testArea = new GroupBox { Text = "RegEx-Test", Dock = DockStyle.Fill, Height = 250,
-            Margin = new Padding(6, 14, 6, 12) };
+        var testHeading = new Label { AutoSize = true, Font = new Font(Font, FontStyle.Bold),
+            Text = "RegEx-Test", Margin = new Padding(6, 16, 6, 4) };
+        AddWide(testHeading, 11);
+        var testArea = new GroupBox { Dock = DockStyle.Fill, Height = 250,
+            Margin = new Padding(6, 2, 6, 12) };
         var testLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6,
             Padding = new Padding(12, 8, 12, 8) };
         testLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -304,11 +310,12 @@ public sealed class MainForm : Form
             TextAlign = ContentAlignment.MiddleLeft };
         testLayout.Controls.Add(testResult, 0, 5);
         testArea.Controls.Add(testLayout);
-        AddWide(testArea, 11);
+        AddWide(testArea, 12);
 
         var regexFields = new[] { regex, weeklyRegex, costRegex, freeRegex };
-        var exampleOutputs = new[] { "Current session: 42% used",
+        var defaultExampleOutputs = new[] { "Current session: 42% used",
             "Current week (all models): 76% used", "Total cost: $0.0000", "Free account" };
+        var exampleOutputs = (string[])defaultExampleOutputs.Clone();
         var previousChoice = -1;
         regexChoice.SelectedIndexChanged += (_, _) =>
         {
@@ -361,9 +368,14 @@ public sealed class MainForm : Form
                 testResult.ForeColor = Color.Firebrick;
             }
         };
+        var defaultAppServerArguments = configuration.GetSection("Codex:AppServerArguments").Get<string[]>()
+            ?? ["app-server", "--listen", "stdio://"];
         var appServer = AddField("Codex App-Server-Argumente (JSON)",
-            "[\"app-server\",\"--listen\",\"stdio://\"]", 0, 12, 3);
-        var save = new Button { Text = "Einstellungen prüfen und speichern", AutoSize = true };
+            System.Text.Json.JsonSerializer.Serialize(defaultAppServerArguments), 0, 13, 3);
+        var save = new Button { Text = "Speichern", Image = UiIcons.Create(UiIcon.Save, 26),
+            TextImageRelation = TextImageRelation.ImageBeforeText, Width = 190, Height = 42,
+            TextAlign = ContentAlignment.MiddleLeft, ImageAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(4, 0, 4, 8) };
         save.Click += async (_, _) => await UiAction(async () =>
         {
             if (!TimeSpan.TryParse(poll.Text, out var p) || p <= TimeSpan.Zero) throw new InvalidOperationException("Das Polling-Intervall ist ungültig.");
@@ -399,9 +411,53 @@ public sealed class MainForm : Form
             await LoadHistoryAsync();
             MessageBox.Show(this, "Die Einstellungen wurden gespeichert. Das Minimierungsziel gilt sofort; die übrigen Änderungen gelten nach dem nächsten Start.", "Einstellungen");
         });
-        save.Margin = new Padding(6, 12, 6, 8);
-        content.Controls.Add(save, 0, 13);
-        content.SetColumnSpan(save, 3);
+
+        async Task<string> LoadCurrentValueAsync(string key, string configurationKey, string fallback) =>
+            await ui.LoadSettingAsync(key) ?? configuration[configurationKey] ?? fallback;
+
+        async Task ReloadSettingsAsync()
+        {
+            poll.Text = await LoadCurrentValueAsync("Scheduler.PollInterval", "Scheduler:PollInterval",
+                schedulerOptions.PollInterval.ToString("c"));
+            timeout.Text = await LoadCurrentValueAsync("Scheduler.ExecutionTimeout", "Scheduler:ExecutionTimeout",
+                schedulerOptions.ExecutionTimeout.ToString("c"));
+            usageHistoryInterval.Text = await LoadCurrentValueAsync("Scheduler.HistoryUsageEventInterval",
+                "Scheduler:HistoryUsageEventInterval", schedulerOptions.HistoryUsageEventInterval.ToString("c"));
+            maximumAttempts.Text = await LoadCurrentValueAsync("Scheduler.MaximumAttempts", "Scheduler:MaximumAttempts",
+                schedulerOptions.MaximumAttempts.ToString());
+            retryBackoff.Text = await LoadCurrentValueAsync("Scheduler.RetryBackoff", "Scheduler:RetryBackoff",
+                schedulerOptions.RetryBackoff.ToString("c"));
+            maximumRetryBackoff.Text = await LoadCurrentValueAsync("Scheduler.MaximumRetryBackoff",
+                "Scheduler:MaximumRetryBackoff", schedulerOptions.MaximumRetryBackoff.ToString("c"));
+            regex.Text = await LoadCurrentValueAsync("Claude.Usage.Pattern", "Claude:Usage:Pattern",
+                ClaudeUsageOptions.DefaultPattern);
+            weeklyRegex.Text = await LoadCurrentValueAsync("Claude.Usage.WeeklyPattern", "Claude:Usage:WeeklyPattern",
+                ClaudeUsageOptions.DefaultWeeklyPattern);
+            costRegex.Text = await LoadCurrentValueAsync("Claude.Usage.CostPattern", "Claude:Usage:CostPattern",
+                ClaudeUsageOptions.DefaultCostPattern);
+            freeRegex.Text = await LoadCurrentValueAsync("Claude.Usage.FreeAccountPattern",
+                "Claude:Usage:FreeAccountPattern", ClaudeUsageOptions.DefaultFreeAccountPattern);
+            appServer.Text = await ui.LoadSettingAsync("Codex.AppServerArguments")
+                ?? System.Text.Json.JsonSerializer.Serialize(defaultAppServerArguments);
+            var minimizeValue = await LoadCurrentValueAsync("UI.MinimizeToTray", "UI:MinimizeToTray", "False");
+            minimizeTarget.SelectedIndex = bool.TryParse(minimizeValue, out var savedMinimizeToTray)
+                && savedMinimizeToTray ? 1 : 0;
+            minimizeToTray = minimizeTarget.SelectedIndex == 1;
+
+            Array.Copy(defaultExampleOutputs, exampleOutputs, defaultExampleOutputs.Length);
+            previousChoice = -1;
+            regexChoice.SelectedIndex = 0;
+            previousChoice = 0;
+            sample.Text = defaultExampleOutputs[0];
+            testResult.Text = "Noch nicht getestet.";
+            testResult.ForeColor = SystemColors.ControlText;
+        }
+
+        var cancel = new Button { Text = "Abbrechen", Image = UiIcons.Create(UiIcon.Cancel, 26),
+            TextImageRelation = TextImageRelation.ImageBeforeText, Width = 190, Height = 42,
+            TextAlign = ContentAlignment.MiddleLeft, ImageAlign = ContentAlignment.MiddleLeft,
+            Margin = new Padding(4, 0, 4, 0) };
+        cancel.Click += async (_, _) => await UiAction(ReloadSettingsAsync);
         scroll.Controls.Add(content);
         const string projectUrl = "https://github.com/VoSs2o0o/KIScheduler";
         var footer = new TableLayoutPanel { Dock = DockStyle.Bottom, Height = 34, ColumnCount = 2,
@@ -429,9 +485,48 @@ public sealed class MainForm : Form
             Text = $"Version {Application.ProductVersion}" };
         footer.Controls.Add(projectLink, 0, 0);
         footer.Controls.Add(version, 1, 0);
+
+        var navigationLinks = new FlowLayoutPanel { Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true,
+            Padding = new Padding(10, 14, 10, 10), BackColor = SystemColors.Control };
+        navigationLinks.Controls.Add(new Label { Text = "Bereiche", Font = new Font(Font, FontStyle.Bold),
+            AutoSize = true, Margin = new Padding(6, 0, 6, 12) });
+        void AddNavigationButton(Label heading, UiIcon icon, string label)
+        {
+            var button = new Button { Text = label, Image = UiIcons.Create(icon, 26),
+                TextImageRelation = TextImageRelation.ImageBeforeText, Width = 190, Height = 56,
+                TextAlign = ContentAlignment.MiddleLeft, ImageAlign = ContentAlignment.MiddleLeft,
+                Margin = new Padding(4, 0, 4, 8) };
+            button.AccessibleDescription = heading.Text;
+            button.Click += (_, _) =>
+                scroll.AutoScrollPosition = new Point(0, Math.Max(0, heading.Top - 8));
+            navigationLinks.Controls.Add(button);
+        }
+        AddNavigationButton(runtimeHeading, UiIcon.Settings, "Laufzeit & Provider");
+        AddNavigationButton(claudeHeading, UiIcon.Pattern, "Claude-Ausgabe");
+        AddNavigationButton(testHeading, UiIcon.Test, "RegEx-Test");
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown, WrapContents = false,
+            Padding = new Padding(10, 8, 10, 4), BorderStyle = BorderStyle.FixedSingle };
+        actions.Controls.Add(save);
+        actions.Controls.Add(cancel);
+        var navigation = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
+        navigation.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        navigation.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        navigation.RowStyles.Add(new RowStyle(SizeType.Absolute, 112));
+        navigation.Controls.Add(navigationLinks, 0, 0);
+        navigation.Controls.Add(actions, 0, 1);
+
+        var settingsBody = new Panel { Dock = DockStyle.Fill };
+        settingsBody.Controls.Add(scroll);
+        settingsBody.Controls.Add(footer);
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        layout.Controls.Add(navigation, 0, 0);
+        layout.Controls.Add(settingsBody, 1, 0);
         var page = new TabPage("Einstellungen");
-        page.Controls.Add(scroll);
-        page.Controls.Add(footer);
+        page.Controls.Add(layout);
         return page;
     }
 
@@ -676,9 +771,12 @@ public sealed class MainForm : Form
             : "Verarbeitung: aktiv";
         workerState.BackColor = paused ? Color.Firebrick : Color.Honeydew;
         workerState.ForeColor = paused ? Color.White : Color.DarkGreen;
-        schedulerPauseButton.Text = paused ? "Verarbeitung fortsetzen" : "Verarbeitung pausieren";
-        schedulerPauseButton.BackColor = paused ? Color.Firebrick : SystemColors.Control;
-        schedulerPauseButton.ForeColor = paused ? Color.White : SystemColors.ControlText;
+        schedulerPauseButton.Text = paused ? "Fortsetzen" : "Pausieren";
+        schedulerPauseButton.ToolTipText = paused ? "Verarbeitung fortsetzen"
+            : "Pausiert neue Starts; bereits laufende Aufträge laufen kontrolliert weiter.";
+        schedulerPauseButton.Image = paused ? playIcon : pauseIcon;
+        schedulerPauseButton.BackColor = paused ? Color.MistyRose : Color.White;
+        schedulerPauseButton.ForeColor = SystemColors.ControlText;
         schedulerPauseMenuItem.Text = paused ? "Verarbeitung fortsetzen" : "Verarbeitung pausieren";
         tray.Text = paused ? "KIScheduler – Verarbeitung pausiert"
             : $"KIScheduler – {scheduler.RunningCount} laufend";
@@ -843,6 +941,8 @@ public sealed class MainForm : Form
         itemPauseButton.Enabled = item is not null && (item.Status == WorkItemStatus.Pausiert
             ? WorkItemStateMachine.CanTransition(item.Status, WorkItemStatus.InWarteschlange)
             : WorkItemStateMachine.CanTransition(item.Status, WorkItemStatus.Pausiert));
+        itemPauseButton.Text = item?.Status == WorkItemStatus.Pausiert ? "Fortsetzen" : "Pausieren";
+        itemPauseButton.Image = item?.Status == WorkItemStatus.Pausiert ? playIcon : pauseIcon;
         cancelButton.Enabled = item is not null
             && WorkItemStateMachine.CanTransition(item.Status, WorkItemStatus.Abgebrochen);
         requeueButton.Enabled = item?.Status is WorkItemStatus.TechnischErfolgreich
@@ -875,8 +975,62 @@ public sealed class MainForm : Form
         RestoreScrollPosition(grid, firstDisplayedRow);
     }
     private async Task UiAction(Func<Task> action) { try { await action(); } catch (Exception ex) { MessageBox.Show(this, ex.Message, "KIScheduler", MessageBoxButtons.OK, MessageBoxIcon.Error); } }
-    private static ToolStripButton Button(string text, Action action) { var b = new ToolStripButton(text); b.Click += (_, _) => action(); return b; }
-    private static ToolStripButton Button(string text, Func<Task> action) { var b = new ToolStripButton(text); b.Click += async (_, _) => await action(); return b; }
+    private static ToolStrip Toolbar() => new()
+    {
+        GripStyle = ToolStripGripStyle.Hidden, BackColor = Color.White,
+        ImageScalingSize = new Size(64, 64), AutoSize = false, Height = 106,
+        Padding = new Padding(5, 3, 5, 3),
+        Renderer = new ToolStripProfessionalRenderer(new ToolbarColorTable())
+    };
+
+    private static ToolStripButton StyleButton(ToolStripButton button, UiIcon icon, string? label = null)
+    {
+        var fullText = button.Text ?? string.Empty;
+        button.ToolTipText = string.IsNullOrEmpty(button.ToolTipText) ? fullText : button.ToolTipText;
+        button.Text = label ?? ShortLabel(fullText);
+        button.Image = icon == UiIcon.Pause ? pauseIcon : UiIcons.Create(icon, 64);
+        button.ImageScaling = ToolStripItemImageScaling.None;
+        button.DisplayStyle = ToolStripItemDisplayStyle.ImageAndText;
+        button.TextImageRelation = TextImageRelation.ImageAboveText;
+        button.TextAlign = ContentAlignment.BottomCenter;
+        button.ImageAlign = ContentAlignment.TopCenter;
+        button.AutoSize = false;
+        button.Size = new Size(94, 98);
+        button.Font = new Font("Segoe UI", 8.5f);
+        return button;
+    }
+
+    private static string ShortLabel(string text) => text switch
+    {
+        "Neues Projekt" => "Projekt",
+        "Priorität +" => "Prio +",
+        "Priorität −" => "Prio −",
+        "Usage aktualisieren" => "Usage",
+        "Plattform und Profile verwalten" => "Verwalten",
+        "Projekt anlegen" => "Anlegen",
+        "Projekt bearbeiten" => "Bearbeiten",
+        "Projekt löschen" => "Löschen",
+        "Projekt-Hold bewusst freigeben" => "Freigeben",
+        "Fortsetzungsbefehl kopieren" => "Kopieren",
+        "Regel hinzufügen" => "Hinzufügen",
+        "Regel bearbeiten" => "Bearbeiten",
+        "Regel entfernen" => "Entfernen",
+        _ => text
+    };
+
+    private static ToolStripButton Button(string text, UiIcon icon, Action action)
+    {
+        var button = StyleButton(new ToolStripButton(text), icon);
+        button.Click += (_, _) => action();
+        return button;
+    }
+
+    private static ToolStripButton Button(string text, UiIcon icon, Func<Task> action)
+    {
+        var button = StyleButton(new ToolStripButton(text), icon);
+        button.Click += async (_, _) => await action();
+        return button;
+    }
     private static TabPage Page(string title, Control content, params Control[] top) { var page = new TabPage(title); content.Dock = DockStyle.Fill; page.Controls.Add(content); foreach (var c in top.Reverse()) { c.Dock = DockStyle.Top; page.Controls.Add(c); } return page; }
     private static DataGridView Grid() => new() { Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false, AutoGenerateColumns = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect, MultiSelect = false, RowHeadersVisible = false, AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.DisplayedCellsExceptHeaders };
     private static DataGridViewTextBoxColumn TextColumn(string title, string name, int width) => new() { HeaderText = title, Name = name, Width = width, SortMode = DataGridViewColumnSortMode.Automatic };

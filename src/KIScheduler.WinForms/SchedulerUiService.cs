@@ -345,6 +345,9 @@ public sealed class SchedulerUiService(
     public Task SaveSettingAsync(string key, string value, CancellationToken cancellationToken = default) =>
         settings.SetAsync(key, value, cancellationToken);
 
+    public Task<string?> LoadSettingAsync(string key, CancellationToken cancellationToken = default) =>
+        settings.GetAsync(key, cancellationToken);
+
     public async Task SaveProjectAsync(ProjectDefinition project,
         CancellationToken cancellationToken = default)
     {

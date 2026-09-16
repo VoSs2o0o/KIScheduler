@@ -347,7 +347,9 @@ internal sealed class PlatformDialog : Form
         {
             if (e.RowIndex >= 0) Request(ProfileAction.Bearbeiten, profiles.Rows[e.RowIndex].Tag as PlatformProfile);
         };
-        var profileTools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top };
+        var profileTools = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Top,
+            BackColor = Color.White, ImageScalingSize = new Size(64, 64), AutoSize = false,
+            Height = 106, Renderer = new ToolStripProfessionalRenderer(new ToolbarColorTable()) };
         profileTools.Items.Add(ProfileButton("Hinzufügen", ProfileAction.Hinzufuegen));
         profileTools.Items.Add(ProfileButton("Bearbeiten", ProfileAction.Bearbeiten));
         profileTools.Items.Add(ProfileButton("Als Standard", ProfileAction.AlsStandard));
@@ -395,7 +397,31 @@ internal sealed class PlatformDialog : Form
 
     private ToolStripButton ProfileButton(string text, ProfileAction action)
     {
-        var button = new ToolStripButton(text);
+        var icon = action switch
+        {
+            ProfileAction.Hinzufuegen => UiIcon.Add,
+            ProfileAction.Bearbeiten => UiIcon.Edit,
+            ProfileAction.AlsStandard => UiIcon.Default,
+            ProfileAction.Deaktivieren => UiIcon.Delete,
+            _ => UiIcon.Refresh
+        };
+        var button = new ToolStripButton(text)
+        {
+            Text = action switch
+            {
+                ProfileAction.AlsStandard => "Standard",
+                ProfileAction.Deaktivieren => "Deaktivieren",
+                ProfileAction.Pruefen => "Usage prüfen",
+                _ => text
+            },
+            ToolTipText = text, Image = UiIcons.Create(icon, 64),
+            ImageScaling = ToolStripItemImageScaling.None,
+            DisplayStyle = ToolStripItemDisplayStyle.ImageAndText,
+            TextImageRelation = TextImageRelation.ImageAboveText,
+            TextAlign = ContentAlignment.BottomCenter,
+            ImageAlign = ContentAlignment.TopCenter,
+            AutoSize = false, Size = new Size(110, 98), Font = new Font("Segoe UI", 8.5f)
+        };
         button.Click += (_, _) => Request(action);
         return button;
     }
